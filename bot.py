@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import discord
 from discord.ext import commands
@@ -9,7 +10,8 @@ from groq import Groq
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parent
+load_dotenv(PROJECT_ROOT / ".env")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
@@ -296,7 +298,15 @@ async def create_server(ctx: commands.Context, *, prompt: str):
         except ValueError as exc:
             await ctx.send(f"⚠️ Groq returned an invalid server plan: {exc}")
         except Exception as exc:  # noqa: BLE001 - report and keep the bot alive
-            await ctx.send("❌ I wasn't able to generate the server blueprint right now.")
+            error_text = str(exc).lower()
+            if "api key" in error_text or "401" in error_text or "unauthorized" in error_text:
+                await ctx.send("❌ The Groq API key is missing, invalid, or not loaded from your `.env` file.")
+            elif "rate limit" in error_text or "429" in error_text:
+                await ctx.send("❌ Groq is rate-limiting requests right now. Please wait a moment and try again.")
+            elif "model" in error_text and ("not found" in error_text or "unavailable" in error_text):
+                await ctx.send("❌ The selected Groq model is unavailable for your account. I can switch to a more compatible model.")
+            else:
+                await ctx.send(f"❌ Groq request failed: {exc}")
             print(f"Groq API Error: {exc}")
 
 
