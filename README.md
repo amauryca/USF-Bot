@@ -10,6 +10,7 @@ student questions using Groq's `llama-3.3-70b-versatile` model.
 |---|---|---|
 | `!setup_usf` | Admin only | Locks down `@everyone` and creates the Gateway, Commons, and Academics categories/channels/roles. |
 | `!setup_roles` | Admin only | Posts the reaction-role embed in `#get-roles`. |
+| `!create_server <idea>` | Admin only | Uses Groq to generate a complete server blueprint and creates the roles/categories/channels. |
 | `!ask <question>` | Everyone | Asks Groq's Llama 3.3 70B model a question. |
 
 ## 1. Create the Discord bot
@@ -51,7 +52,8 @@ In your server:
 
 1. Run `!setup_usf` to build the categories, channels, and roles.
 2. Go to `#get-roles` and run `!setup_roles` to post the onboarding embed.
-3. Try `!ask When was USF founded?` in any channel.
+3. Run `!create_server A private study and gaming community with roles for Admin, Moderator, Member, and categories like Community, Study Hall, and Events` to let Groq scaffold an entire server layout from a prompt.
+4. Try `!ask When was USF founded?` in any channel.
 
 ## Deploying so it runs 24/7
 

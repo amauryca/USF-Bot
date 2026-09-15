@@ -1,3 +1,4 @@
+import json
 import os
 
 import discord
@@ -38,6 +39,93 @@ ROLE_MAPPING = {
     "🎓": "USF 2026",
 }
 BASE_ROLE_NAME = "USF 2026"
+
+
+def parse_server_blueprint(raw_response: str) -> dict:
+    """Extract a valid JSON server blueprint from Groq output."""
+    cleaned = raw_response.strip()
+
+    if "```" in cleaned:
+        parts = cleaned.split("```")
+        if len(parts) >= 2:
+            cleaned = parts[1].strip()
+            if cleaned.lower().startswith("json"):
+                cleaned = cleaned[4:].strip()
+
+    try:
+        blueprint = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Groq did not return valid JSON for the server blueprint.") from exc
+
+    if not isinstance(blueprint, dict):
+        raise ValueError("The server blueprint must be a JSON object.")
+
+    name = blueprint.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("The blueprint is missing a valid 'name' field.")
+
+    roles = blueprint.get("roles", [])
+    if not isinstance(roles, list) or not roles:
+        raise ValueError("The blueprint is missing a valid 'roles' list.")
+
+    categories = blueprint.get("categories", [])
+    if not isinstance(categories, list) or not categories:
+        raise ValueError("The blueprint is missing a valid 'categories' list.")
+
+    valid_categories = []
+    for category in categories:
+        if not isinstance(category, dict):
+            raise ValueError("Each category must be a JSON object with a name and channels array.")
+        category_name = category.get("name")
+        channels = category.get("channels", [])
+        if not isinstance(category_name, str) or not category_name.strip():
+            raise ValueError("Each category in the blueprint needs a valid 'name'.")
+        if not isinstance(channels, list) or not channels:
+            raise ValueError(f"Category '{category_name}' is missing a valid 'channels' list.")
+
+        voice_channels = category.get("voice_channels", [])
+        if not isinstance(voice_channels, list):
+            voice_channels = []
+
+        valid_categories.append({
+            "name": category_name.strip(),
+            "channels": [str(channel).strip() for channel in channels if str(channel).strip()],
+            "voice_channels": [str(channel).strip() for channel in voice_channels if str(channel).strip()],
+        })
+
+    blueprint["roles"] = [str(role).strip() for role in roles if str(role).strip()]
+    blueprint["categories"] = valid_categories
+    if "welcome_message" in blueprint and blueprint["welcome_message"] is not None:
+        blueprint["welcome_message"] = str(blueprint["welcome_message"]).strip()
+    if "description" in blueprint and blueprint["description"] is not None:
+        blueprint["description"] = str(blueprint["description"]).strip()
+    return blueprint
+
+
+async def create_blueprint_server(guild: discord.Guild, blueprint: dict):
+    """Create a Discord guild layout based on the AI-generated blueprint."""
+    if blueprint.get("name"):
+        await guild.edit(name=str(blueprint["name"]).strip())
+
+    for role_name in blueprint.get("roles", []):
+        if not discord.utils.get(guild.roles, name=role_name):
+            await guild.create_role(name=role_name, reason="AI-generated server blueprint")
+
+    for category in blueprint.get("categories", []):
+        category_name = category["name"]
+        category_obj = await guild.create_category(category_name)
+
+        for channel_name in category["channels"]:
+            await guild.create_text_channel(channel_name, category=category_obj)
+
+        for voice_name in category.get("voice_channels", []):
+            await guild.create_voice_channel(voice_name, category=category_obj)
+
+    welcome_message = blueprint.get("welcome_message")
+    if welcome_message:
+        system_channel = guild.system_channel
+        if system_channel:
+            await system_channel.send(welcome_message)
 
 
 @bot.event
@@ -165,7 +253,63 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
 
 # ---------------------------------------------------------------------------
-# 3. Groq-powered AI assistant
+# 3. Groq-powered server builder
+# ---------------------------------------------------------------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def create_server(ctx: commands.Context, *, prompt: str):
+    """Use Groq to design and build a Discord server from a plain-language prompt."""
+    if not prompt.strip():
+        await ctx.send("🧠 Add a short description for the server you want, for example: `!create_server A cozy gaming community for friends`")
+        return
+
+    async with ctx.typing():
+        try:
+            chat_completion = groq_client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a senior Discord server architect. Return only valid JSON, with no code fences, "
+                            "using this exact schema: { \"name\": \"string\", \"description\": \"string\", \"roles\": [\"string\"], "
+                            "\"welcome_message\": \"string\", \"categories\": [{\"name\": \"string\", \"channels\": [\"string\"], "
+                            "\"voice_channels\": [\"string\"]}] }. Keep the server from being too overwhelming, choose a memorable name, "
+                            "include 3-6 roles, create 2-4 categories, make sure each category has at least 2 text channels, "
+                            "include 1-2 voice channels per category, and set a friendly welcome message."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                model="llama-3.3-70b-versatile",
+                temperature=0.7,
+            )
+            raw_response = chat_completion.choices[0].message.content
+            blueprint = parse_server_blueprint(raw_response)
+            await create_blueprint_server(ctx.guild, blueprint)
+
+            summary = (
+                f"✅ Server blueprint created: **{blueprint['name']}**\n\n"
+                f"**Roles:** {', '.join(blueprint['roles'])}\n"
+                f"**Categories:** {', '.join(category['name'] for category in blueprint['categories'])}"
+            )
+            await ctx.send(summary)
+        except ValueError as exc:
+            await ctx.send(f"⚠️ Groq returned an invalid server plan: {exc}")
+        except Exception as exc:  # noqa: BLE001 - report and keep the bot alive
+            await ctx.send("❌ I wasn't able to generate the server blueprint right now.")
+            print(f"Groq API Error: {exc}")
+
+
+@create_server.error
+async def create_server_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("🚫 You need Administrator permissions to run this command.")
+    else:
+        await ctx.send(f"⚠️ Something went wrong: {error}")
+
+
+# ---------------------------------------------------------------------------
+# 4. Groq-powered AI assistant
 # ---------------------------------------------------------------------------
 @bot.command()
 async def ask(ctx: commands.Context, *, question: str):
