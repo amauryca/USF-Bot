@@ -21,6 +21,24 @@ if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env file or host's env vars.")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
+GROQ_MODEL = "llama-3.1-8b-instant"
+
+
+def get_groq_model_candidates() -> list[str]:
+    """Return a model list ordered by the most likely available Groq model."""
+    preferred = [
+        GROQ_MODEL,
+        "llama-3.3-70b-versatile",
+        "llama-3.1-70b-versatile",
+    ]
+    seen = set()
+    models = []
+    for model in preferred:
+        if model and model not in seen:
+            seen.add(model)
+            models.append(model)
+    return models
+
 
 intents = discord.Intents.default()
 intents.members = True
@@ -267,27 +285,44 @@ async def create_server(ctx: commands.Context, *, prompt: str):
 
     async with ctx.typing():
         try:
-            chat_completion = groq_client.chat.completions.create(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a senior Discord server architect. Return only valid JSON, with no code fences, "
-                            "using this exact schema: { \"name\": \"string\", \"description\": \"string\", \"roles\": [\"string\"], "
-                            "\"welcome_message\": \"string\", \"categories\": [{\"name\": \"string\", \"channels\": [\"string\"], "
-                            "\"voice_channels\": [\"string\"]}] }. Keep the server from being too overwhelming, choose a memorable name, "
-                            "include 3-6 roles, create 2-4 categories, make sure each category has at least 2 text channels, "
-                            "include 1-2 voice channels per category, and set a friendly welcome message."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                model="llama-3.3-70b-versatile",
-                temperature=0.7,
-            )
-            raw_response = chat_completion.choices[0].message.content
-            blueprint = parse_server_blueprint(raw_response)
-            await create_blueprint_server(ctx.guild, blueprint)
+            last_error = None
+            for model_name in get_groq_model_candidates():
+                try:
+                    chat_completion = groq_client.chat.completions.create(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are a senior Discord server architect. Return only valid JSON, with no code fences, "
+                                    "using this exact schema: { \"name\": \"string\", \"description\": \"string\", \"roles\": [\"string\"], "
+                                    "\"welcome_message\": \"string\", \"categories\": [{\"name\": \"string\", \"channels\": [\"string\"], "
+                                    "\"voice_channels\": [\"string\"]}] }. Keep the server from being too overwhelming, choose a memorable name, "
+                                    "include 3-6 roles, create 2-4 categories, make sure each category has at least 2 text channels, "
+                                    "include 1-2 voice channels per category, and set a friendly welcome message."
+                                ),
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        model=model_name,
+                        temperature=0.7,
+                    )
+                    raw_response = chat_completion.choices[0].message.content
+                    blueprint = parse_server_blueprint(raw_response)
+                    await create_blueprint_server(ctx.guild, blueprint)
+
+                    summary = (
+                        f"✅ Server blueprint created: **{blueprint['name']}**\n\n"
+                        f"**Roles:** {', '.join(blueprint['roles'])}\n"
+                        f"**Categories:** {', '.join(category['name'] for category in blueprint['categories'])}"
+                    )
+                    await ctx.send(summary)
+                    return
+                except Exception as exc:  # noqa: BLE001 - keep trying other models
+                    last_error = exc
+                    if "model" not in str(exc).lower() or "not found" not in str(exc).lower():
+                        raise
+            if last_error is not None:
+                raise last_error
 
             summary = (
                 f"✅ Server blueprint created: **{blueprint['name']}**\n\n"
@@ -326,27 +361,37 @@ async def ask(ctx: commands.Context, *, question: str):
     """Ask the AI assistant a question, e.g. !ask when was USF founded?"""
     async with ctx.typing():
         try:
-            chat_completion = groq_client.chat.completions.create(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are BullBot, a helpful AI assistant for the University of "
-                            "South Florida (USF) Class of 2026 Discord server. Keep answers "
-                            "concise, friendly, and helpful."
-                        ),
-                    },
-                    {"role": "user", "content": question},
-                ],
-                model="llama-3.3-70b-versatile",
-            )
-            answer = chat_completion.choices[0].message.content
+            last_error = None
+            for model_name in get_groq_model_candidates():
+                try:
+                    chat_completion = groq_client.chat.completions.create(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are BullBot, a helpful AI assistant for the University of "
+                                    "South Florida (USF) Class of 2026 Discord server. Keep answers "
+                                    "concise, friendly, and helpful."
+                                ),
+                            },
+                            {"role": "user", "content": question},
+                        ],
+                        model=model_name,
+                    )
+                    answer = chat_completion.choices[0].message.content
 
-            # Discord messages are capped at 2000 characters.
-            if len(answer) > 2000:
-                answer = answer[:1996] + "..."
+                    # Discord messages are capped at 2000 characters.
+                    if len(answer) > 2000:
+                        answer = answer[:1996] + "..."
 
-            await ctx.send(answer)
+                    await ctx.send(answer)
+                    return
+                except Exception as exc:  # noqa: BLE001 - keep trying other models
+                    last_error = exc
+                    if "model" not in str(exc).lower() or "not found" not in str(exc).lower():
+                        raise
+            if last_error is not None:
+                raise last_error
         except Exception as exc:  # noqa: BLE001 - report and keep the bot alive
             await ctx.send("❌ Sorry, I'm having trouble connecting to my AI brain right now.")
             print(f"Groq API Error: {exc}")

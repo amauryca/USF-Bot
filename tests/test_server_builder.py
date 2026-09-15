@@ -50,3 +50,13 @@ def test_parse_server_blueprint_supports_advanced_fields():
 
     assert blueprint["categories"][0]["voice_channels"] == ["Lobby", "Match Chat"]
     assert blueprint["welcome_message"] == "Welcome to Pixel Forge!"
+
+
+def test_get_groq_model_candidates_prefers_available_model():
+    bot.GROQ_MODEL = "llama-3.1-8b-instant"
+
+    assert bot.get_groq_model_candidates() == [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-70b-versatile",
+    ]
