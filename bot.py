@@ -168,51 +168,118 @@ async def on_ready():
 
 @bot.command()
 async def ping(ctx: commands.Context):
-    await ctx.send("Pong! 🏓")
+    await ctx.send("Pong! 🏓 I am online and ready to help.")
 
 
 @bot.command()
 async def hello(ctx: commands.Context):
-    await ctx.send("Hello! I'm the USF Bot! Go Bulls 🤘")
+    await ctx.send("Hello! I’m the USF Bot! Go Bulls 🤘")
 
 
 @bot.command()
 async def status(ctx: commands.Context):
-    await ctx.send("Hello, I'm the USF Bot! Go Bulls 🤘")
+    await ctx.send("Hello, I’m the USF Bot! Go Bulls 🤘\nI can help with USF info, server tools, and moderation.")
+
+
+@bot.command()
+async def about(ctx: commands.Context):
+    await ctx.send(
+        "**USF Bot**\n"
+        "A Discord helper for both campus life and server management.\n"
+        "Use me for USF questions, event updates, moderation, channel tools, and general server support."
+    )
 
 
 @bot.command(name="commands")
 async def list_commands(ctx: commands.Context):
     command_list = (
-        "**USF Bot Commands**\n"
-        "`!ping` - Check if the bot is online\n"
-        "`!hello` - Say hello\n"
-        "`!status` - Show the bot status\n"
-        "`!commands` - Show this list\n"
+        "**USF Bot Command Guide**\n\n"
+        "**General**\n"
+        "`!ping` - Check bot availability\n"
+        "`!hello` - Friendly greeting\n"
+        "`!status` - Show bot status\n"
+        "`!about` - Brief bot overview\n"
+        "`!commands` - Show this menu\n"
+        "`!serverinfo` - Show server details\n"
+        "`!userinfo @user` - Show user info\n"
+        "`!channelinfo` - Show current channel info\n"
+        "`!report @user <reason>` - Send a report for moderation review\n\n"
+        "**Server Tools**\n"
+        "`!create_channel <name>` - Create a text channel in the current category\n"
+        "`!lockdown` - Lock the current channel to staff only\n"
+        "`!clear <amount>` - Delete recent messages\n"
+        "`!kick @user <reason>` - Kick a member\n"
+        "`!ban @user <reason>` - Ban a member\n"
+        "`!timeout @user <minutes> [reason]` - Time out a member\n"
+        "`!untimeout @user` - Remove a timeout\n"
+        "`!warn @user <reason>` - Temporarily warn a member\n\n"
+        "**USF & Campus**\n"
         "`!ask <question>` - Ask a USF question with Groq\n"
-        "`!search <query>` - Search for the latest USF-related info\n"
-        "`!today` - Find what is happening at USF today\n"
-        "`!football` - Find the latest USF football schedule\n"
-        "`!sports <team>` - Find a USF sports schedule\n"
-        "`!calendar` - Find upcoming USF events and deadlines\n"
-        "`!campus <name>` - Get information about a USF campus\n"
-        "`!dining` - Find USF dining locations and hours\n"
-        "`!parking` - Find USF parking information\n"
-        "`!admissions` - Find USF admissions information\n"
-        "`!financialaid` - Find USF financial aid information\n"
-        "`!academic` - Find academic dates and registration information\n"
-        "`!major <name>` - Learn about a USF major or program\n"
-        "`!transit` - Find Bull Runner and USF transportation information\n"
-        "`!weather` - Find current weather near USF\n"
-        "`!news` - Find the latest USF news\n"
-        "`!events` - Find USF student events and activities\n"
-        "`!resources` - Find USF student support resources\n"
-        "`!bulls` - Get a USF fact or trivia question\n"
-        "`!sources <topic>` - Find official USF links for a topic\n"
-        "`!create_channel <name>` - Create a clean text channel in the current category\n"
-        "`!lockdown` - Lock the current channel to staff-only\n"
+        "`!search <query>` - Search for current USF-related info\n"
+        "`!today` - What's happening at USF today\n"
+        "`!football` - Latest USF football updates\n"
+        "`!sports [team]` - USF sports schedule and updates\n"
+        "`!calendar` - Academic and campus events\n"
+        "`!campus [name]` - Campus information\n"
+        "`!dining` - Dining options and hours\n"
+        "`!parking` - Parking rules and garages\n"
+        "`!admissions` - Admissions information\n"
+        "`!financialaid` - Financial aid info\n"
+        "`!academic` - Academic calendar and registration\n"
+        "`!major <name>` - Learn about a major\n"
+        "`!transit` - Bull Runner and transportation\n"
+        "`!weather` - Weather near USF\n"
+        "`!news` - Latest USF news\n"
+        "`!events` - Student events and activities\n"
+        "`!resources` - Student support resources\n"
+        "`!bulls` - Fun USF trivia or fact\n"
+        "`!sources <topic>` - Official USF links\n"
     )
     await ctx.send(command_list)
+
+
+@bot.command(name="serverinfo")
+async def serverinfo(ctx: commands.Context):
+    guild = ctx.guild
+    member_count = guild.member_count
+    text_channels = len(guild.text_channels)
+    voice_channels = len(guild.voice_channels)
+    created = guild.created_at.strftime("%Y-%m-%d")
+    await ctx.send(
+        f"**{guild.name}**\n"
+        f"Members: {member_count}\n"
+        f"Text channels: {text_channels}\n"
+        f"Voice channels: {voice_channels}\n"
+        f"Created: {created}\n"
+        f"Owner: {guild.owner.mention if guild.owner else 'Unknown'}"
+    )
+
+
+@bot.command(name="userinfo")
+async def userinfo(ctx: commands.Context, member: discord.Member = None):
+    target = member or ctx.author
+    roles = " ".join(role.mention for role in target.roles[1:]) or "No extra roles"
+    joined = target.joined_at.strftime("%Y-%m-%d") if target.joined_at else "Unknown"
+    created = target.created_at.strftime("%Y-%m-%d") if target.created_at else "Unknown"
+    await ctx.send(
+        f"**User info for {target.mention}**\n"
+        f"ID: {target.id}\n"
+        f"Joined: {joined}\n"
+        f"Account created: {created}\n"
+        f"Roles: {roles}"
+    )
+
+
+@bot.command(name="channelinfo")
+async def channelinfo(ctx: commands.Context):
+    channel = ctx.channel
+    await ctx.send(
+        f"**Channel info**\n"
+        f"Name: {channel.mention}\n"
+        f"Type: {channel.type}\n"
+        f"Category: {channel.category.name if channel.category else 'None'}\n"
+        f"Created: {channel.created_at.strftime('%Y-%m-%d')}"
+    )
 
 
 @bot.command(name="create_channel")
@@ -237,6 +304,67 @@ async def lockdown_channel(ctx: commands.Context):
     overwrites.read_message_history = False
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrites)
     await ctx.send(f"🔒 {ctx.channel.mention} has been locked down to staff only.")
+
+
+@bot.command(name="clear")
+@commands.has_permissions(manage_messages=True)
+async def clear_messages(ctx: commands.Context, amount: int = 10):
+    if amount <= 0:
+        await ctx.send("🧹 Use `!clear <number>` with a positive number.")
+        return
+
+    deleted = await ctx.channel.purge(limit=amount)
+    await ctx.send(f"🧹 Deleted {len(deleted)} messages.", delete_after=3)
+
+
+@bot.command(name="kick")
+@commands.has_permissions(kick_members=True)
+async def kick_member(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+    await member.kick(reason=reason)
+    await ctx.send(f"👢 {member.mention} was kicked. Reason: {reason}")
+
+
+@bot.command(name="ban")
+@commands.has_permissions(ban_members=True)
+async def ban_member(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+    await member.ban(reason=reason)
+    await ctx.send(f"🚫 {member.mention} was banned. Reason: {reason}")
+
+
+@bot.command(name="timeout")
+@commands.has_permissions(moderate_members=True)
+async def timeout_member(ctx: commands.Context, member: discord.Member, minutes: int = 10, *, reason: str = "No reason provided"):
+    if minutes <= 0:
+        await ctx.send("⏱️ Use `!timeout @user <minutes> [reason]` with a positive number.")
+        return
+
+    duration = timedelta(minutes=minutes)
+    await member.timeout(duration, reason=reason)
+    await ctx.send(f"⏱️ {member.mention} was timed out for {minutes} minutes. Reason: {reason}")
+
+
+@bot.command(name="untimeout")
+@commands.has_permissions(moderate_members=True)
+async def untimeout_member(ctx: commands.Context, member: discord.Member):
+    await member.timeout(None, reason="Removed by moderator")
+    await ctx.send(f"✅ {member.mention} is no longer timed out.")
+
+
+@bot.command(name="warn")
+@commands.has_permissions(moderate_members=True)
+async def warn_member(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+    await member.timeout(timedelta(minutes=5), reason=f"Warning issued by {ctx.author}: {reason}")
+    await ctx.send(f"⚠️ {member.mention} was warned and timed out for 5 minutes. Reason: {reason}")
+
+
+@bot.command(name="report")
+async def report_member(ctx: commands.Context, member: discord.Member, *, reason: str):
+    mod_channel = discord.utils.get(ctx.guild.text_channels, name="mod-logs") or discord.utils.get(ctx.guild.text_channels, name="moderation")
+    if mod_channel:
+        await mod_channel.send(
+            f"📣 Report received by {ctx.author.mention} against {member.mention}\nReason: {reason}"
+        )
+    await ctx.send(f"📣 Your report against {member.mention} has been submitted.")
 
 
 @bot.command(name="ask")
