@@ -160,6 +160,23 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
+def staff_only():
+    async def predicate(ctx: commands.Context):
+        if ctx.guild is None:
+            return False
+
+        if ctx.author.guild_permissions.administrator:
+            return True
+
+        staff_role = discord.utils.get(ctx.guild.roles, name="staff")
+        if staff_role is None:
+            return False
+
+        return staff_role in ctx.author.roles
+
+    return commands.check(predicate)
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name} ({bot.user.id})")
@@ -283,6 +300,7 @@ async def channelinfo(ctx: commands.Context):
 
 
 @bot.command(name="create_channel")
+@staff_only()
 @commands.has_permissions(manage_channels=True)
 async def create_channel(ctx: commands.Context, channel_name: str):
     if not channel_name or not channel_name.strip():
@@ -296,6 +314,7 @@ async def create_channel(ctx: commands.Context, channel_name: str):
 
 
 @bot.command(name="lockdown")
+@staff_only()
 @commands.has_permissions(manage_channels=True)
 async def lockdown_channel(ctx: commands.Context):
     overwrites = ctx.channel.overwrites_for(ctx.guild.default_role)
@@ -307,6 +326,7 @@ async def lockdown_channel(ctx: commands.Context):
 
 
 @bot.command(name="clear")
+@staff_only()
 @commands.has_permissions(manage_messages=True)
 async def clear_messages(ctx: commands.Context, amount: int = 10):
     if amount <= 0:
@@ -318,6 +338,7 @@ async def clear_messages(ctx: commands.Context, amount: int = 10):
 
 
 @bot.command(name="kick")
+@staff_only()
 @commands.has_permissions(kick_members=True)
 async def kick_member(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
     await member.kick(reason=reason)
@@ -325,6 +346,7 @@ async def kick_member(ctx: commands.Context, member: discord.Member, *, reason: 
 
 
 @bot.command(name="ban")
+@staff_only()
 @commands.has_permissions(ban_members=True)
 async def ban_member(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
     await member.ban(reason=reason)
@@ -332,6 +354,7 @@ async def ban_member(ctx: commands.Context, member: discord.Member, *, reason: s
 
 
 @bot.command(name="timeout")
+@staff_only()
 @commands.has_permissions(moderate_members=True)
 async def timeout_member(ctx: commands.Context, member: discord.Member, minutes: int = 10, *, reason: str = "No reason provided"):
     if minutes <= 0:
@@ -344,6 +367,7 @@ async def timeout_member(ctx: commands.Context, member: discord.Member, minutes:
 
 
 @bot.command(name="untimeout")
+@staff_only()
 @commands.has_permissions(moderate_members=True)
 async def untimeout_member(ctx: commands.Context, member: discord.Member):
     await member.timeout(None, reason="Removed by moderator")
@@ -351,6 +375,7 @@ async def untimeout_member(ctx: commands.Context, member: discord.Member):
 
 
 @bot.command(name="warn")
+@staff_only()
 @commands.has_permissions(moderate_members=True)
 async def warn_member(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
     await member.timeout(timedelta(minutes=5), reason=f"Warning issued by {ctx.author}: {reason}")
