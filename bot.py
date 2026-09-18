@@ -23,7 +23,7 @@ if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env file or host's env vars.")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "groq/compound")
 
 
 def get_groq_model_candidates() -> list[str]:
@@ -37,8 +37,8 @@ def get_groq_model_candidates() -> list[str]:
         preferred.append(GROQ_MODEL.strip())
 
     for model_name in [
+        "groq/compound",
         "llama-3.3-70b-versatile",
-        "llama-3.1-70b-versatile",
     ]:
         if model_name not in preferred:
             preferred.append(model_name)

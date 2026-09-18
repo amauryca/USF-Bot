@@ -22,16 +22,15 @@ def test_contains_slur_detects_common_offensive_terms():
 def test_get_groq_model_candidates_prefers_available_model():
     old_env = os.environ.get("GROQ_MODEL")
     os.environ.pop("GROQ_MODEL", None)
-    bot.GROQ_MODEL = "openai/gpt-oss-120b"
+    bot.GROQ_MODEL = "groq/compound"
 
     try:
         assert bot.get_groq_model_candidates() == [
-            "openai/gpt-oss-120b",
+            "groq/compound",
             "llama-3.3-70b-versatile",
-            "llama-3.1-70b-versatile",
         ]
     finally:
-        bot.GROQ_MODEL = "openai/gpt-oss-120b"
+        bot.GROQ_MODEL = "groq/compound"
         if old_env is not None:
             os.environ["GROQ_MODEL"] = old_env
         else:
@@ -42,13 +41,12 @@ def test_get_groq_model_candidates_uses_env_override():
     old_model = bot.GROQ_MODEL
     old_env = os.environ.get("GROQ_MODEL")
     os.environ["GROQ_MODEL"] = "llama-3.3-70b-versatile"
-    bot.GROQ_MODEL = "openai/gpt-oss-120b"
+    bot.GROQ_MODEL = "groq/compound"
 
     try:
         assert bot.get_groq_model_candidates() == [
             "llama-3.3-70b-versatile",
-            "openai/gpt-oss-120b",
-            "llama-3.1-70b-versatile",
+            "groq/compound",
         ]
     finally:
         bot.GROQ_MODEL = old_model
