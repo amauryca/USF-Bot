@@ -27,21 +27,16 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "groq/compound")
 
 
 def get_groq_model_candidates() -> list[str]:
-    """Return a prioritized list of Groq models while preserving env overrides."""
+    """Return the configured model first and only use the default if no override is present."""
     preferred = []
-    env_model = os.getenv("GROQ_MODEL")
-    if env_model and env_model.strip():
-        preferred.append(env_model.strip())
 
-    if GROQ_MODEL and GROQ_MODEL.strip() and GROQ_MODEL not in preferred:
-        preferred.append(GROQ_MODEL.strip())
+    for model_name in [os.getenv("GROQ_MODEL"), GROQ_MODEL]:
+        value = (model_name or "").strip()
+        if value and value not in preferred:
+            preferred.append(value)
 
-    for model_name in [
-        "groq/compound",
-        "llama-3.3-70b-versatile",
-    ]:
-        if model_name not in preferred:
-            preferred.append(model_name)
+    if not preferred:
+        preferred.append("groq/compound")
 
     return preferred
 

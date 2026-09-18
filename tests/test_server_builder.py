@@ -25,10 +25,7 @@ def test_get_groq_model_candidates_prefers_available_model():
     bot.GROQ_MODEL = "groq/compound"
 
     try:
-        assert bot.get_groq_model_candidates() == [
-            "groq/compound",
-            "llama-3.3-70b-versatile",
-        ]
+        assert bot.get_groq_model_candidates() == ["groq/compound"]
     finally:
         bot.GROQ_MODEL = "groq/compound"
         if old_env is not None:
@@ -40,12 +37,12 @@ def test_get_groq_model_candidates_prefers_available_model():
 def test_get_groq_model_candidates_uses_env_override():
     old_model = bot.GROQ_MODEL
     old_env = os.environ.get("GROQ_MODEL")
-    os.environ["GROQ_MODEL"] = "llama-3.3-70b-versatile"
+    os.environ["GROQ_MODEL"] = "custom/groq-model"
     bot.GROQ_MODEL = "groq/compound"
 
     try:
         assert bot.get_groq_model_candidates() == [
-            "llama-3.3-70b-versatile",
+            "custom/groq-model",
             "groq/compound",
         ]
     finally:
