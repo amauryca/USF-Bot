@@ -59,3 +59,12 @@ def test_trim_text_for_model_truncates_long_text():
 
     assert len(trimmed) <= 200
     assert trimmed.endswith("...")
+
+
+def test_build_command_pages_splits_large_command_lists():
+    pages = bot.build_command_pages()
+
+    assert len(pages) > 1
+    assert all(len(page) <= 1900 for page in pages)
+    assert "**General**" in pages[0]
+    assert "**USF & Campus**" in pages[-1]

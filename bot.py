@@ -187,6 +187,78 @@ def staff_only():
     return commands.check(predicate)
 
 
+def build_command_pages() -> list[str]:
+    """Split the command help into short, Discord-friendly pages."""
+    pages = [
+        (
+            "**USF Bot Command Guide**\n\n"
+            "**General**\n"
+            "`!ping` - Check bot availability\n"
+            "`!hello` - Friendly greeting\n"
+            "`!status` - Show bot status\n"
+            "`!about` - Brief bot overview\n"
+            "`!commands` - Show this menu\n"
+            "`!serverinfo` - Show server details\n"
+            "`!userinfo @user` - Show user info\n"
+            "`!channelinfo` - Show current channel info\n"
+            "`!report @user <reason>` - Send a report for moderation review\n"
+        ),
+        (
+            "**Server Tools**\n"
+            "`!create_channel <name>` - Create a text channel in the current category\n"
+            "`!lockdown` - Lock the current channel to staff only\n"
+            "`!clear <amount>` - Delete recent messages\n"
+            "`!kick @user <reason>` - Kick a member\n"
+            "`!ban @user <reason>` - Ban a member\n"
+            "`!timeout @user <minutes> [reason]` - Time out a member\n"
+            "`!untimeout @user` - Remove a timeout\n"
+            "`!warn @user <reason>` - Temporarily warn a member\n"
+        ),
+        (
+            "**USF & Campus**\n"
+            "`!ask <question>` - Ask a USF question with Groq\n"
+            "`!search <query>` - Search for current USF-related info\n"
+            "`!today` - What's happening at USF today\n"
+            "`!football` - Latest USF football updates\n"
+            "`!sports [team]` - USF sports schedule and updates\n"
+            "`!calendar` - Academic and campus events\n"
+            "`!campus [name]` - Campus information\n"
+            "`!dining` - Dining options and hours\n"
+            "`!parking` - Parking rules and garages\n"
+            "`!admissions` - Admissions information\n"
+            "`!financialaid` - Financial aid info\n"
+            "`!academic` - Academic calendar and registration\n"
+            "`!major <name>` - Learn about a major\n"
+            "`!transit` - Bull Runner and transportation\n"
+            "`!weather` - Weather near USF\n"
+            "`!news` - Latest USF news\n"
+            "`!events` - Student events and activities\n"
+            "`!resources` - Student support resources\n"
+            "`!bulls` - Fun USF trivia or fact\n"
+            "`!sources <topic>` - Official USF links\n"
+        ),
+    ]
+
+    final_pages = []
+    for page in pages:
+        if len(page) <= 1900:
+            final_pages.append(page)
+        else:
+            chunks = []
+            current = ""
+            for line in page.splitlines(True):
+                if len(current) + len(line) > 1800 and current:
+                    chunks.append(current)
+                    current = line
+                else:
+                    current += line
+            if current:
+                chunks.append(current)
+            final_pages.extend(chunks)
+
+    return final_pages
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name} ({bot.user.id})")
@@ -218,51 +290,14 @@ async def about(ctx: commands.Context):
 
 
 @bot.command(name="commands")
-async def list_commands(ctx: commands.Context):
-    command_list = (
-        "**USF Bot Command Guide**\n\n"
-        "**General**\n"
-        "`!ping` - Check bot availability\n"
-        "`!hello` - Friendly greeting\n"
-        "`!status` - Show bot status\n"
-        "`!about` - Brief bot overview\n"
-        "`!commands` - Show this menu\n"
-        "`!serverinfo` - Show server details\n"
-        "`!userinfo @user` - Show user info\n"
-        "`!channelinfo` - Show current channel info\n"
-        "`!report @user <reason>` - Send a report for moderation review\n\n"
-        "**Server Tools**\n"
-        "`!create_channel <name>` - Create a text channel in the current category\n"
-        "`!lockdown` - Lock the current channel to staff only\n"
-        "`!clear <amount>` - Delete recent messages\n"
-        "`!kick @user <reason>` - Kick a member\n"
-        "`!ban @user <reason>` - Ban a member\n"
-        "`!timeout @user <minutes> [reason]` - Time out a member\n"
-        "`!untimeout @user` - Remove a timeout\n"
-        "`!warn @user <reason>` - Temporarily warn a member\n\n"
-        "**USF & Campus**\n"
-        "`!ask <question>` - Ask a USF question with Groq\n"
-        "`!search <query>` - Search for current USF-related info\n"
-        "`!today` - What's happening at USF today\n"
-        "`!football` - Latest USF football updates\n"
-        "`!sports [team]` - USF sports schedule and updates\n"
-        "`!calendar` - Academic and campus events\n"
-        "`!campus [name]` - Campus information\n"
-        "`!dining` - Dining options and hours\n"
-        "`!parking` - Parking rules and garages\n"
-        "`!admissions` - Admissions information\n"
-        "`!financialaid` - Financial aid info\n"
-        "`!academic` - Academic calendar and registration\n"
-        "`!major <name>` - Learn about a major\n"
-        "`!transit` - Bull Runner and transportation\n"
-        "`!weather` - Weather near USF\n"
-        "`!news` - Latest USF news\n"
-        "`!events` - Student events and activities\n"
-        "`!resources` - Student support resources\n"
-        "`!bulls` - Fun USF trivia or fact\n"
-        "`!sources <topic>` - Official USF links\n"
-    )
-    await ctx.send(command_list)
+async def list_commands(ctx: commands.Context, page: int = 1):
+    pages = build_command_pages()
+    if page < 1 or page > len(pages):
+        await ctx.send(f"📖 Commands pages: 1-{len(pages)}. Use `!commands 1`, `!commands 2`, etc.")
+        return
+
+    current_page = pages[page - 1]
+    await ctx.send(f"Page {page}/{len(pages)}\n\n{current_page}")
 
 
 @bot.command(name="serverinfo")
