@@ -11,6 +11,11 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 try:
+    from groq import Groq
+except ImportError:  # pragma: no cover - optional provider dependency
+    Groq = None
+
+try:
     from google import genai
     from google.genai import types
 except ImportError:  # pragma: no cover - optional provider dependency
@@ -21,20 +26,41 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-AI_PROVIDER = "google"
+AI_PROVIDER = os.getenv("AI_PROVIDER", "groq").lower()
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is not set. Add it to your .env file or host's env vars.")
 
-if not GOOGLE_API_KEY:
+if AI_PROVIDER == "groq" and not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env file or host's env vars.")
+
+if AI_PROVIDER == "google" and not GOOGLE_API_KEY:
     raise RuntimeError("GOOGLE_API_KEY is not set. Add it to your .env file or host's env vars.")
 
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
 GOOGLE_MODEL = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
+
+groq_client = Groq(api_key=GROQ_API_KEY) if Groq and GROQ_API_KEY else None
 
 
 def get_ai_provider() -> str:
-    return "google"
+    return os.getenv("AI_PROVIDER", "groq").lower()
+
+
+def get_groq_model_candidates() -> list[str]:
+    candidates = []
+    env_model = os.getenv("GROQ_MODEL")
+    if env_model:
+        candidates.append(env_model)
+    if GROQ_MODEL not in candidates:
+        candidates.append(GROQ_MODEL)
+    return candidates
+
+
+def get_google_model_name() -> str:
+    return os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
 
 
 def build_usf_context_prompt(query: str) -> str:
@@ -170,9 +196,33 @@ async def ask_google(question: str, extra_context: str = "") -> str:
     raise RuntimeError("Google did not return usable content.")
 
 
+async def ask_groq(question: str, extra_context: str = "") -> str:
+    """Ask Groq for a USF answer using the configured Groq API key."""
+    if groq_client is None:
+        raise RuntimeError("Groq is not configured for this instance. Run: pip install groq")
+
+    prompt = build_usf_context_prompt(question)
+    if extra_context:
+        prompt += f"\n\nCurrent web context:\n{trim_text_for_model(extra_context, 1800)}"
+
+    response = groq_client.chat.completions.create(
+        model=get_groq_model_candidates()[0],
+        messages=[
+            {"role": "system", "content": trim_text_for_model(prompt, 2200)},
+            {"role": "user", "content": question},
+        ],
+        temperature=0.7,
+        max_tokens=500,
+    )
+
+    return response.choices[0].message.content.strip()
+
+
 async def ask_ai(question: str, extra_context: str = "") -> str:
-    """Use Gemini as the only provider for USF answers."""
-    return await ask_google(question, extra_context)
+    """Use the configured provider for USF answers."""
+    if get_ai_provider() == "google":
+        return await ask_google(question, extra_context)
+    return await ask_groq(question, extra_context)
 
 
 intents = discord.Intents.default()

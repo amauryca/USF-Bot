@@ -1,8 +1,9 @@
 import os
 
 os.environ.setdefault("DISCORD_TOKEN", "test_discord_token")
-os.environ.setdefault("GOOGLE_API_KEY", "test_google_key")
-os.environ.setdefault("GOOGLE_MODEL", "gemini-2.5-flash")
+os.environ.setdefault("AI_PROVIDER", "groq")
+os.environ.setdefault("GROQ_API_KEY", "test_groq_key")
+os.environ.setdefault("GROQ_MODEL", "groq/compound")
 
 import bot
 
@@ -28,8 +29,8 @@ def test_trim_text_for_model_truncates_long_text():
     assert trimmed.endswith("...")
 
 
-def test_get_ai_provider_prefers_google_when_configured():
-    assert bot.get_ai_provider() == "google"
+def test_get_ai_provider_defaults_to_groq():
+    assert bot.get_ai_provider() == "groq"
 
 
 def test_build_usf_context_prompt_is_usf_first_and_positive():
