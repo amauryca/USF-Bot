@@ -448,6 +448,10 @@ async def ask(ctx: commands.Context, *, question: str):
         answer = await ask_groq(question, extra_context)
         await ctx.send(answer)
     except Exception as exc:
+        message = str(exc)
+        if "request_too_large" in message.lower() or "413" in message:
+            await ctx.send("I’m broken because my AI is dumb and can’t handle searching this prompt because it’s too long.")
+            return
         await ctx.send(f"⚠️ I couldn't answer that right now. Error: {exc}")
 
 
@@ -480,6 +484,10 @@ async def search(ctx: commands.Context, *, query: str):
         )
         await ctx.send(response.choices[0].message.content.strip())
     except Exception as exc:
+        message = str(exc)
+        if "request_too_large" in message.lower() or "413" in message:
+            await ctx.send("I’m broken because my AI is dumb and can’t handle searching this prompt because it’s too long.")
+            return
         await ctx.send(f"⚠️ I couldn’t search for that right now. Error: {exc}")
 
 
@@ -490,6 +498,10 @@ async def send_usf_topic_answer(ctx: commands.Context, topic: str):
         answer = await ask_groq(f"What is the latest information about USF {topic}?", snippets)
         await ctx.send(answer)
     except Exception as exc:
+        message = str(exc)
+        if "request_too_large" in message.lower() or "413" in message:
+            await ctx.send("I’m broken because my AI is dumb and can’t handle searching this prompt because it’s too long.")
+            return
         await ctx.send(f"⚠️ I couldn’t get the latest USF information right now. Error: {exc}")
 
 
