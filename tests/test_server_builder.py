@@ -51,3 +51,11 @@ def test_get_groq_model_candidates_uses_env_override():
             os.environ["GROQ_MODEL"] = old_env
         else:
             os.environ.pop("GROQ_MODEL", None)
+
+
+def test_trim_text_for_model_truncates_long_text():
+    long_text = "word " * 5000
+    trimmed = bot.trim_text_for_model(long_text, 200)
+
+    assert len(trimmed) <= 200
+    assert trimmed.endswith("...")

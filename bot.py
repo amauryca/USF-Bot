@@ -53,7 +53,19 @@ def build_usf_context_prompt(query: str) -> str:
     )
 
 
-def fetch_search_snippets(query: str, max_results: int = 3) -> str:
+def trim_text_for_model(text: str, max_chars: int = 2200) -> str:
+    """Trim long prompt text so Groq requests stay within safe payload limits."""
+    if text is None:
+        return ""
+
+    cleaned = " ".join((str(text)).split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+
+    return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+def fetch_search_snippets(query: str, max_results: int = 2) -> str:
     """Try a lightweight web search to gather current info for USF questions."""
     try:
         search_url = "https://duckduckgo.com/html/?q=" + quote(query)
@@ -71,7 +83,8 @@ def fetch_search_snippets(query: str, max_results: int = 3) -> str:
             clean_title = re.sub(r"<.*?>", "", title).strip()
             clean_snippet = re.sub(r"<.*?>", "", snippet).strip()
             if clean_title or clean_snippet:
-                snippets.append(f"{clean_title} — {clean_snippet}")
+                combined = f"{clean_title} — {clean_snippet}"
+                snippets.append(trim_text_for_model(combined, 280))
 
         if snippets:
             return "\n\n".join(snippets)
@@ -124,9 +137,11 @@ async def handle_slur_violation(member: discord.Member, channel: discord.TextCha
 async def ask_groq(question: str, extra_context: str = "") -> str:
     """Ask Groq for an answer, trying candidate models until one works."""
     model_candidates = get_groq_model_candidates()
-    system_prompt = build_usf_context_prompt(question)
+    safe_question = trim_text_for_model(question, 500)
+    system_prompt = build_usf_context_prompt(safe_question)
     if extra_context:
-        system_prompt += f"\n\nCurrent web context:\n{extra_context}"
+        system_prompt += f"\n\nCurrent web context:\n{trim_text_for_model(extra_context, 1800)}"
+    system_prompt = trim_text_for_model(system_prompt, 2200)
 
     last_error = None
     for model_name in model_candidates:
@@ -135,10 +150,10 @@ async def ask_groq(question: str, extra_context: str = "") -> str:
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": question},
+                    {"role": "user", "content": safe_question},
                 ],
                 temperature=0.7,
-                max_tokens=600,
+                max_tokens=500,
             )
             return response.choices[0].message.content.strip()
         except Exception as exc:  # pragma: no cover - runtime dependent
@@ -413,16 +428,17 @@ async def search(ctx: commands.Context, *, query: str):
             await ctx.send("🔎 I couldn’t pull live results for that topic, but I can still answer from the USF context if you ask directly.")
             return
 
+        safe_query = trim_text_for_model(query, 400)
         prompt = (
             "You are a helpful USF assistant. Use the web snippets below to answer the user's query. "
             "Be concise, cite that the information may need final verification, and stay focused on USF-related facts.\n\n"
-            f"Web snippets:\n{snippets}\n\nUser query: {query}"
+            f"Web snippets:\n{trim_text_for_model(snippets, 1800)}\n\nUser query: {safe_query}"
         )
         response = groq_client.chat.completions.create(
             model=get_groq_model_candidates()[0],
             messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": query},
+                {"role": "system", "content": trim_text_for_model(prompt, 2200)},
+                {"role": "user", "content": safe_query},
             ],
             temperature=0.7,
             max_tokens=500,
