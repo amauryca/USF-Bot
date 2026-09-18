@@ -9,7 +9,6 @@ from urllib.request import Request, urlopen
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from groq import Groq
 
 try:
     from google import genai
@@ -22,56 +21,33 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-AI_PROVIDER = (os.getenv("AI_PROVIDER") or "groq").strip().lower()
+AI_PROVIDER = "google"
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is not set. Add it to your .env file or host's env vars.")
 
-if not GROQ_API_KEY and AI_PROVIDER == "groq":
-    raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env file or host's env vars.")
-
-if not GOOGLE_API_KEY and AI_PROVIDER == "google":
+if not GOOGLE_API_KEY:
     raise RuntimeError("GOOGLE_API_KEY is not set. Add it to your .env file or host's env vars.")
 
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 GOOGLE_MODEL = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "groq/compound")
+
 
 def get_ai_provider() -> str:
-    provider = (os.getenv("AI_PROVIDER") or "groq").strip().lower()
-    return provider if provider in {"groq", "google"} else "groq"
-
-
-def get_groq_model_candidates() -> list[str]:
-    """Return the configured model first and only use the default if no override is present."""
-    preferred = []
-
-    for model_name in [os.getenv("GROQ_MODEL"), GROQ_MODEL]:
-        value = (model_name or "").strip()
-        if value and value not in preferred:
-            preferred.append(value)
-
-    if not preferred:
-        preferred.append("groq/compound")
-
-    return preferred
-
-
-def get_google_model_name() -> str:
-    return (os.getenv("GOOGLE_MODEL") or GOOGLE_MODEL or "gemini-2.5-flash").strip()
+    return "google"
 
 
 def build_usf_context_prompt(query: str) -> str:
-    """Add time-sensitive USF framing to user questions for better answers."""
+    """Always anchor the assistant around USF and reinforce a pro-USF tone."""
     current_date = datetime.now().strftime("%A, %B %d, %Y")
     return (
-        f"Current date: {current_date}. You are the USF assistant for the University of South Florida. "
-        "Answer current USF-related questions about athletics, admissions, campus life, classes, events, "
-        "football, and other student topics. If the user asks about upcoming events or schedules, be careful "
-        "and say to check the official USF calendar or athletics pages for final confirmation. Keep answers concise, "
-        f"friendly, and helpful.\n\nUser question: {query}"
+        f"Current date: {current_date}. You are the official USF assistant for the University of South Florida. "
+        "You are always USF-focused, helpful, and enthusiastic about USF. "
+        "Speak positively about USF, its students, athletics, campus, events, academics, and community. "
+        "When answering about upcoming events or schedules, say to verify the official USF calendar or athletics page for final confirmation. "
+        "Keep answers concise, friendly, and proud of USF. "
+        "If a question is not about USF, gently redirect it back to USF or explain how it connects to campus life. "
+        f"\n\nUser question: {query}"
     )
 
 
@@ -156,40 +132,6 @@ async def handle_slur_violation(member: discord.Member, channel: discord.TextCha
         pass
 
 
-async def ask_groq(question: str, extra_context: str = "") -> str:
-    """Ask Groq for an answer, trying candidate models until one works."""
-    if groq_client is None:
-        raise RuntimeError("Groq is not configured for this instance.")
-
-    model_candidates = get_groq_model_candidates()
-    safe_question = trim_text_for_model(question, 500)
-    system_prompt = build_usf_context_prompt(safe_question)
-    if extra_context:
-        system_prompt += f"\n\nCurrent web context:\n{trim_text_for_model(extra_context, 1800)}"
-    system_prompt = trim_text_for_model(system_prompt, 2200)
-
-    last_error = None
-    for model_name in model_candidates:
-        try:
-            response = groq_client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": safe_question},
-                ],
-                temperature=0.7,
-                max_tokens=500,
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as exc:  # pragma: no cover - runtime dependent
-            last_error = exc
-            continue
-
-    if last_error:
-        raise RuntimeError(f"All Groq model attempts failed: {last_error}")
-    raise RuntimeError("No Groq models were available.")
-
-
 async def ask_google(question: str, extra_context: str = "") -> str:
     """Ask Gemini for a response using the configured Google API key."""
     if not GOOGLE_API_KEY:
@@ -229,11 +171,8 @@ async def ask_google(question: str, extra_context: str = "") -> str:
 
 
 async def ask_ai(question: str, extra_context: str = "") -> str:
-    """Use the configured provider for AI answers."""
-    provider = get_ai_provider()
-    if provider == "google":
-        return await ask_google(question, extra_context)
-    return await ask_groq(question, extra_context)
+    """Use Gemini as the only provider for USF answers."""
+    return await ask_google(question, extra_context)
 
 
 intents = discord.Intents.default()
