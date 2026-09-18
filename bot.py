@@ -11,19 +11,37 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from groq import Groq
 
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:  # pragma: no cover - optional provider dependency
+    genai = None
+    types = None
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+AI_PROVIDER = (os.getenv("AI_PROVIDER") or "groq").strip().lower()
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is not set. Add it to your .env file or host's env vars.")
-if not GROQ_API_KEY:
+
+if not GROQ_API_KEY and AI_PROVIDER == "groq":
     raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env file or host's env vars.")
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+if not GOOGLE_API_KEY and AI_PROVIDER == "google":
+    raise RuntimeError("GOOGLE_API_KEY is not set. Add it to your .env file or host's env vars.")
+
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+GOOGLE_MODEL = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "groq/compound")
+
+def get_ai_provider() -> str:
+    provider = (os.getenv("AI_PROVIDER") or "groq").strip().lower()
+    return provider if provider in {"groq", "google"} else "groq"
 
 
 def get_groq_model_candidates() -> list[str]:
@@ -39,6 +57,10 @@ def get_groq_model_candidates() -> list[str]:
         preferred.append("groq/compound")
 
     return preferred
+
+
+def get_google_model_name() -> str:
+    return (os.getenv("GOOGLE_MODEL") or GOOGLE_MODEL or "gemini-2.5-flash").strip()
 
 
 def build_usf_context_prompt(query: str) -> str:
@@ -136,6 +158,9 @@ async def handle_slur_violation(member: discord.Member, channel: discord.TextCha
 
 async def ask_groq(question: str, extra_context: str = "") -> str:
     """Ask Groq for an answer, trying candidate models until one works."""
+    if groq_client is None:
+        raise RuntimeError("Groq is not configured for this instance.")
+
     model_candidates = get_groq_model_candidates()
     safe_question = trim_text_for_model(question, 500)
     system_prompt = build_usf_context_prompt(safe_question)
@@ -163,6 +188,52 @@ async def ask_groq(question: str, extra_context: str = "") -> str:
     if last_error:
         raise RuntimeError(f"All Groq model attempts failed: {last_error}")
     raise RuntimeError("No Groq models were available.")
+
+
+async def ask_google(question: str, extra_context: str = "") -> str:
+    """Ask Gemini for a response using the configured Google API key."""
+    if not GOOGLE_API_KEY:
+        raise RuntimeError("Google is not configured for this instance.")
+    if genai is None or types is None:
+        raise RuntimeError("Google SDK is not installed. Run: pip install google-genai")
+
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    model_name = get_google_model_name()
+    prompt = build_usf_context_prompt(question)
+    if extra_context:
+        prompt += f"\n\nCurrent web context:\n{trim_text_for_model(extra_context, 1800)}"
+
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            max_output_tokens=500,
+            temperature=0.7,
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+        ),
+    )
+
+    text = getattr(response, "text", None)
+    if text:
+        return text.strip()
+
+    if hasattr(response, "candidates") and response.candidates:
+        candidate = response.candidates[0]
+        if hasattr(candidate, "content") and candidate.content:
+            parts = getattr(candidate.content, "parts", [])
+            joined = "".join(getattr(part, "text", "") for part in parts if getattr(part, "text", ""))
+            if joined:
+                return joined.strip()
+
+    raise RuntimeError("Google did not return usable content.")
+
+
+async def ask_ai(question: str, extra_context: str = "") -> str:
+    """Use the configured provider for AI answers."""
+    provider = get_ai_provider()
+    if provider == "google":
+        return await ask_google(question, extra_context)
+    return await ask_groq(question, extra_context)
 
 
 intents = discord.Intents.default()
@@ -445,7 +516,7 @@ async def ask(ctx: commands.Context, *, question: str):
 
     try:
         extra_context = fetch_search_snippets(question)
-        answer = await ask_groq(question, extra_context)
+        answer = await ask_ai(question, extra_context)
         await ctx.send(answer)
     except Exception as exc:
         message = str(exc)
@@ -473,16 +544,20 @@ async def search(ctx: commands.Context, *, query: str):
             "Be concise, cite that the information may need final verification, and stay focused on USF-related facts.\n\n"
             f"Web snippets:\n{trim_text_for_model(snippets, 1800)}\n\nUser query: {safe_query}"
         )
-        response = groq_client.chat.completions.create(
-            model=get_groq_model_candidates()[0],
-            messages=[
-                {"role": "system", "content": trim_text_for_model(prompt, 2200)},
-                {"role": "user", "content": safe_query},
-            ],
-            temperature=0.7,
-            max_tokens=500,
-        )
-        await ctx.send(response.choices[0].message.content.strip())
+        if get_ai_provider() == "google":
+            answer = await ask_google(safe_query, snippets)
+        else:
+            response = groq_client.chat.completions.create(
+                model=get_groq_model_candidates()[0],
+                messages=[
+                    {"role": "system", "content": trim_text_for_model(prompt, 2200)},
+                    {"role": "user", "content": safe_query},
+                ],
+                temperature=0.7,
+                max_tokens=500,
+            )
+            answer = response.choices[0].message.content.strip()
+        await ctx.send(answer)
     except Exception as exc:
         message = str(exc)
         if "request_too_large" in message.lower() or "413" in message:
@@ -495,7 +570,7 @@ async def send_usf_topic_answer(ctx: commands.Context, topic: str):
     """Answer a preset USF topic using live snippets and Groq."""
     try:
         snippets = fetch_search_snippets(f"USF {topic}")
-        answer = await ask_groq(f"What is the latest information about USF {topic}?", snippets)
+        answer = await ask_ai(f"What is the latest information about USF {topic}?", snippets)
         await ctx.send(answer)
     except Exception as exc:
         message = str(exc)

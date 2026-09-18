@@ -61,6 +61,19 @@ def test_trim_text_for_model_truncates_long_text():
     assert trimmed.endswith("...")
 
 
+def test_get_ai_provider_prefers_google_when_configured():
+    old_provider = os.environ.get("AI_PROVIDER")
+    os.environ["AI_PROVIDER"] = "google"
+
+    try:
+        assert bot.get_ai_provider() == "google"
+    finally:
+        if old_provider is not None:
+            os.environ["AI_PROVIDER"] = old_provider
+        else:
+            os.environ.pop("AI_PROVIDER", None)
+
+
 def test_build_command_pages_splits_large_command_lists():
     pages = bot.build_command_pages()
 
