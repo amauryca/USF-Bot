@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from collections import defaultdict
@@ -87,6 +88,95 @@ def trim_text_for_model(text: str, max_chars: int = 2200) -> str:
         return cleaned
 
     return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+NCAA_API_BASE = "https://ncaa-api.henrygd.me"
+
+
+def fetch_ncaa_json(path: str):
+    """Fetch JSON from the public NCAA API."""
+    url = f"{NCAA_API_BASE.rstrip('/')}/{path.lstrip('/')}"
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8", "ignore"))
+
+
+def extract_ncaa_game_summary(payload):
+    """Normalize different NCAA API payload shapes into a readable game summary."""
+    if not payload:
+        return "I couldn’t find any NCAA game data right now."
+
+    games = []
+    if isinstance(payload, dict):
+        if isinstance(payload.get("games"), list):
+            games = payload["games"]
+        elif isinstance(payload.get("gamesByDate"), dict):
+            for value in payload["gamesByDate"].values():
+                if isinstance(value, list):
+                    games.extend(value)
+        elif isinstance(payload.get("items"), list):
+            games = payload["items"]
+        elif isinstance(payload.get("data"), list):
+            games = payload["data"]
+        elif isinstance(payload.get("scoreboard"), list):
+            games = payload["scoreboard"]
+
+    if not games and isinstance(payload, list):
+        games = payload
+
+    if not games:
+        return "I couldn’t find any NCAA game data right now."
+
+    lines = []
+    for game in games[:5]:
+        if not isinstance(game, dict):
+            continue
+
+        home = game.get("homeTeam") or game.get("home_team") or {}
+        away = game.get("awayTeam") or game.get("away_team") or {}
+        home_name = home.get("name") or home.get("school") or home.get("team") or "Home team"
+        away_name = away.get("name") or away.get("school") or away.get("team") or "Away team"
+        status = game.get("status") or game.get("state") or "Status unknown"
+        start_time = game.get("startTime") or game.get("start_time") or game.get("date") or ""
+        if start_time and "T" in start_time:
+            start_time = start_time.split("T", 1)[0]
+        if start_time:
+            lines.append(f"{away_name} vs {home_name} — {status} ({start_time})")
+        else:
+            lines.append(f"{away_name} vs {home_name} — {status}")
+
+    summary_text = "\n".join(lines)
+    return f"USF-related NCAA game info:\n{summary_text}" if summary_text else "I couldn’t find any NCAA game data right now."
+
+
+def fetch_ncaa_sport_summary(sport_slug: str, division: str = "fbs") -> str:
+    """Try a few NCAA scoreboard and schedule routes for a sport."""
+    year = datetime.now().year
+    candidates = [
+        f"/scoreboard/{sport_slug}/{division}/{year}/all-conf",
+        f"/scoreboard/{sport_slug}/{division}/{year}/1/all-conf",
+        f"/scoreboard/{sport_slug}/{division}/{year}/2/all-conf",
+        f"/scoreboard/{sport_slug}/{division}/{year}/3/all-conf",
+        f"/schedule/{sport_slug}/{division}/{year}",
+    ]
+
+    if sport_slug in {"basketball-men", "basketball-women", "hockey-men", "hockey-women", "baseball", "softball", "soccer-men", "soccer-women"}:
+        candidates = [
+            f"/scoreboard/{sport_slug}/{division}/{year}/all-conf",
+            f"/schedule/{sport_slug}/{division}/{year}",
+            f"/scoreboard/{sport_slug}/{division}/{year}/1/all-conf",
+        ]
+
+    for path in candidates:
+        try:
+            payload = fetch_ncaa_json(path)
+            summary = extract_ncaa_game_summary(payload)
+            if "I couldn’t find any NCAA game data right now." not in summary:
+                return summary
+        except Exception:
+            continue
+
+    return "I couldn’t find any NCAA game data right now."
 
 
 def fetch_search_snippets(query: str, max_results: int = 2) -> str:
@@ -225,6 +315,14 @@ async def ask_ai(question: str, extra_context: str = "") -> str:
     return await ask_groq(question, extra_context)
 
 
+def format_ai_error_message(exc: Exception) -> str:
+    """Return a user-friendly message for provider throttling or generic failures."""
+    message = str(exc).lower()
+    if "rate limit reached" in message or "rate_limit_exceeded" in message or "429" in message:
+        return "woah someone else is using this so like....chill out cause im answering questions wayyyy to fast"
+    return f"⚠️ I couldn't answer that right now. Error: {exc}"
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -280,6 +378,11 @@ def build_command_pages() -> list[str]:
             "`!search <query>` - Search for current USF-related info\n"
             "`!today` - What's happening at USF today\n"
             "`!football` - Latest USF football updates\n"
+            "`!basketball` - Men's and women's basketball updates\n"
+            "`!baseball` - Baseball schedule and scores\n"
+            "`!softball` - Softball schedule and scores\n"
+            "`!soccer` - Soccer updates\n"
+            "`!volleyball` - Volleyball schedule and scores\n"
             "`!sports [team]` - USF sports schedule and updates\n"
             "`!calendar` - Academic and campus events\n"
             "`!campus [name]` - Campus information\n"
@@ -319,6 +422,41 @@ def build_command_pages() -> list[str]:
     return final_pages
 
 
+class CommandPagerView(discord.ui.View):
+    """A paginated Discord view for the command help."""
+
+    def __init__(self, pages: list[str], start_page: int = 1):
+        super().__init__(timeout=180)
+        self.pages = pages
+        self.current_page = max(1, min(start_page, len(pages)))
+        self.prev_button = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
+        self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.primary)
+        self.prev_button.callback = self._go_back
+        self.next_button.callback = self._go_next
+        self.add_item(self.prev_button)
+        self.add_item(self.next_button)
+        self._sync_buttons()
+
+    def _content_for_page(self) -> str:
+        return f"Page {self.current_page}/{len(self.pages)}\n\n{self.pages[self.current_page - 1]}"
+
+    def _sync_buttons(self):
+        self.prev_button.disabled = self.current_page <= 1
+        self.next_button.disabled = self.current_page >= len(self.pages)
+
+    async def _go_back(self, interaction: discord.Interaction):
+        if self.current_page > 1:
+            self.current_page -= 1
+            self._sync_buttons()
+        await interaction.response.edit_message(content=self._content_for_page(), view=self)
+
+    async def _go_next(self, interaction: discord.Interaction):
+        if self.current_page < len(self.pages):
+            self.current_page += 1
+            self._sync_buttons()
+        await interaction.response.edit_message(content=self._content_for_page(), view=self)
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name} ({bot.user.id})")
@@ -352,12 +490,17 @@ async def about(ctx: commands.Context):
 @bot.command(name="commands")
 async def list_commands(ctx: commands.Context, page: int = 1):
     pages = build_command_pages()
-    if page < 1 or page > len(pages):
-        await ctx.send(f"📖 Commands pages: 1-{len(pages)}. Use `!commands 1`, `!commands 2`, etc.")
+    if not pages:
+        await ctx.send("📖 No command pages are available right now.")
         return
 
-    current_page = pages[page - 1]
-    await ctx.send(f"Page {page}/{len(pages)}\n\n{current_page}")
+    requested_page = max(1, min(page, len(pages)))
+    view = CommandPagerView(pages, requested_page)
+    message_content = view._content_for_page()
+    try:
+        await ctx.send(message_content, view=view, ephemeral=True)
+    except TypeError:
+        await ctx.send(message_content, view=view)
 
 
 @bot.command(name="serverinfo")
@@ -512,7 +655,10 @@ async def ask(ctx: commands.Context, *, question: str):
         if "request_too_large" in message.lower() or "413" in message:
             await ctx.send("I’m broken because my AI is dumb and can’t handle searching this prompt because it’s too long.")
             return
-        await ctx.send(f"⚠️ I couldn't answer that right now. Error: {exc}")
+        if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
+            await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
+            return
+        await ctx.send(format_ai_error_message(exc))
 
 
 @bot.command(name="search")
@@ -552,7 +698,10 @@ async def search(ctx: commands.Context, *, query: str):
         if "request_too_large" in message.lower() or "413" in message:
             await ctx.send("I’m broken because my AI is dumb and can’t handle searching this prompt because it’s too long.")
             return
-        await ctx.send(f"⚠️ I couldn’t search for that right now. Error: {exc}")
+        if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
+            await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
+            return
+        await ctx.send(format_ai_error_message(exc))
 
 
 async def send_usf_topic_answer(ctx: commands.Context, topic: str):
@@ -566,7 +715,10 @@ async def send_usf_topic_answer(ctx: commands.Context, topic: str):
         if "request_too_large" in message.lower() or "413" in message:
             await ctx.send("I’m broken because my AI is dumb and can’t handle searching this prompt because it’s too long.")
             return
-        await ctx.send(f"⚠️ I couldn’t get the latest USF information right now. Error: {exc}")
+        if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
+            await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
+            return
+        await ctx.send(format_ai_error_message(exc))
 
 
 @bot.command()
@@ -574,9 +726,47 @@ async def today(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "events and activities happening today")
 
 
+async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division: str, fallback_topic: str, label: str):
+    """Fetch NCAA game info for a sport first, then fall back to the generic USF search path."""
+    try:
+        ncaa_summary = fetch_ncaa_sport_summary(sport_slug, division)
+        if "I couldn’t find any NCAA game data right now." not in ncaa_summary:
+            await ctx.send(f"**{label}**\n{ncaa_summary}")
+            return
+    except Exception:
+        pass
+
+    await send_usf_topic_answer(ctx, fallback_topic)
+
+
 @bot.command()
 async def football(ctx: commands.Context):
-    await send_usf_topic_answer(ctx, "football schedule and upcoming games")
+    await send_usf_sport_answer(ctx, "football", "fbs", "football schedule and upcoming games", "USF Football")
+
+
+@bot.command()
+async def basketball(ctx: commands.Context):
+    await send_usf_sport_answer(ctx, "basketball-men", "d1", "men's basketball schedule and upcoming games", "USF Basketball")
+
+
+@bot.command()
+async def baseball(ctx: commands.Context):
+    await send_usf_sport_answer(ctx, "baseball", "d1", "baseball schedule and upcoming games", "USF Baseball")
+
+
+@bot.command()
+async def softball(ctx: commands.Context):
+    await send_usf_sport_answer(ctx, "softball", "d1", "softball schedule and upcoming games", "USF Softball")
+
+
+@bot.command()
+async def soccer(ctx: commands.Context):
+    await send_usf_sport_answer(ctx, "soccer-men", "d1", "soccer schedule and upcoming games", "USF Soccer")
+
+
+@bot.command()
+async def volleyball(ctx: commands.Context):
+    await send_usf_sport_answer(ctx, "volleyball", "d1", "volleyball schedule and upcoming games", "USF Volleyball")
 
 
 @bot.command()

@@ -42,6 +42,25 @@ def test_build_usf_context_prompt_is_usf_first_and_positive():
     assert "helpful" in lower_prompt
 
 
+def test_extract_ncaa_game_summary_handles_usf_games():
+    payload = {
+        "games": [
+            {
+                "homeTeam": {"name": "USF Bulls"},
+                "awayTeam": {"name": "UCF Knights"},
+                "status": "Scheduled",
+                "startTime": "2026-09-26T18:00:00Z",
+            }
+        ]
+    }
+
+    summary = bot.extract_ncaa_game_summary(payload)
+
+    assert "USF Bulls" in summary
+    assert "UCF Knights" in summary
+    assert "2026-09-26" in summary
+
+
 def test_build_command_pages_splits_large_command_lists():
     pages = bot.build_command_pages()
 
