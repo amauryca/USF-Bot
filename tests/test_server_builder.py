@@ -73,6 +73,7 @@ def test_build_command_pages_splits_large_command_lists():
     assert "!search" in all_text
     assert "!today" in all_text
     assert "!football" in all_text
+    assert "!nextgame" in all_text
     assert "!create_channel" in all_text
     assert "!lockdown" in all_text
     assert "!ban" in all_text
@@ -121,3 +122,28 @@ def test_send_usf_sport_answer_uses_ncaa_only(monkeypatch):
     assert "USF Football" in ctx.sent
     assert "USF Bulls" in ctx.sent
     assert fallback_called["value"] is False
+
+
+def test_get_next_usf_game_uses_ncaa_payload_for_upcoming_match():
+    payload = {
+        "games": [
+            {
+                "homeTeam": {"name": "UCF Knights"},
+                "awayTeam": {"name": "USF Bulls"},
+                "status": "Scheduled",
+                "startTime": "2026-09-26T18:00:00Z",
+            },
+            {
+                "homeTeam": {"name": "FSU Seminoles"},
+                "awayTeam": {"name": "Miami Hurricanes"},
+                "status": "Scheduled",
+                "startTime": "2026-09-19T18:00:00Z",
+            },
+        ]
+    }
+
+    result = bot.extract_next_usf_game(payload)
+
+    assert "USF Bulls" in result
+    assert "UCF Knights" in result
+    assert "2026-09-26" in result

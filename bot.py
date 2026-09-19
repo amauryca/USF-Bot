@@ -233,6 +233,53 @@ def extract_ncaa_game_summary(payload):
     return safe_discord_text(summary_text, 1800)
 
 
+def extract_next_usf_game(payload):
+    """Return the next upcoming USF NCAA game as a short, readable line."""
+    if not payload:
+        return "I couldn’t find any upcoming USF NCAA game right now."
+
+    games = []
+    if isinstance(payload, dict):
+        for key in ("games", "items", "data", "scoreboard", "events"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                games.extend(value)
+        games_by_date = payload.get("gamesByDate")
+        if isinstance(games_by_date, dict):
+            for value in games_by_date.values():
+                if isinstance(value, list):
+                    games.extend(value)
+    elif isinstance(payload, list):
+        games = payload
+
+    for game in games:
+        if not isinstance(game, dict):
+            continue
+
+        home = game.get("homeTeam") or game.get("home_team") or game.get("home") or {}
+        away = game.get("awayTeam") or game.get("away_team") or game.get("away") or {}
+        home_name = home.get("name") or home.get("displayName") or home.get("school") or ""
+        away_name = away.get("name") or away.get("displayName") or away.get("school") or ""
+
+        if not any(is_usf_team_name(name) for name in (home_name, away_name)):
+            continue
+
+        if not home_name or not away_name or home_name.lower() in {"home team", "away team", "team"} or away_name.lower() in {"home team", "away team", "team"}:
+            continue
+
+        status = game.get("status") or game.get("state") or "Status unknown"
+        start_time = game.get("startTime") or game.get("start_time") or game.get("date") or ""
+        if start_time and "T" in start_time:
+            start_time = start_time.split("T", 1)[0]
+
+        result = f"{away_name} vs {home_name} — {status}"
+        if start_time:
+            result += f" ({start_time})"
+        return safe_discord_text(result, 300)
+
+    return "I couldn’t find any upcoming USF NCAA game right now."
+
+
 def get_supported_ncaa_sport_slugs() -> list[str]:
     """Return the NCAA-backed sport slugs currently supported for USF updates."""
     return [
@@ -463,6 +510,7 @@ def build_command_pages() -> list[str]:
             "`!ask <question>` - Ask a USF question\n"
             "`!search <query>` - Search current USF info\n"
             "`!today` - What's happening at USF today\n"
+            "`!nextgame` - Next USF NCAA game\n"
             "`!football` - USF football updates\n"
             "`!basketball` - USF basketball updates\n"
             "`!baseball` - USF baseball updates\n"
@@ -806,6 +854,35 @@ async def send_usf_topic_answer(ctx: commands.Context, topic: str):
 @bot.command()
 async def today(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "events and activities happening today")
+
+
+@bot.command()
+async def nextgame(ctx: commands.Context):
+    """Show the next upcoming USF NCAA game from the NCAA API only."""
+    try:
+        current_year = datetime.now().year
+        payloads = []
+        for sport_slug in get_supported_ncaa_sport_slugs():
+            for path in (
+                f"/scoreboard/{sport_slug}/fbs/{current_year}/all-conf",
+                f"/scoreboard/{sport_slug}/d1/{current_year}/all-conf",
+                f"/schedule/{sport_slug}/fbs/{current_year}",
+                f"/schedule/{sport_slug}/d1/{current_year}",
+            ):
+                try:
+                    payloads.append(fetch_ncaa_json(path))
+                except Exception:
+                    continue
+
+        for payload in payloads:
+            result = extract_next_usf_game(payload)
+            if "I couldn’t find any upcoming USF NCAA game right now." not in result and "USF" in result:
+                await ctx.send(safe_discord_text(f"**Next USF game**\n{result}", 1900))
+                return
+
+        await ctx.send("**Next USF game**\nI couldn’t find any upcoming USF NCAA game right now.")
+    except Exception:
+        await ctx.send("**Next USF game**\nI couldn’t find any upcoming USF NCAA game right now.")
 
 
 async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division: str, fallback_topic: str, label: str):
