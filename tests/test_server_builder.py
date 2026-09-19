@@ -80,3 +80,14 @@ def test_build_command_pages_splits_large_command_lists():
     assert "!dining" not in all_text
     assert "!parking" not in all_text
     assert "!admissions" not in all_text
+
+
+def test_get_supported_ncaa_sport_slugs_includes_core_usf_sports():
+    sport_slugs = bot.get_supported_ncaa_sport_slugs()
+
+    assert "football" in sport_slugs
+    assert "basketball-men" in sport_slugs
+    assert "baseball" in sport_slugs
+    assert "softball" in sport_slugs
+    assert "soccer-men" in sport_slugs
+    assert "volleyball" in sport_slugs

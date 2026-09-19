@@ -233,25 +233,47 @@ def extract_ncaa_game_summary(payload):
     return safe_discord_text(summary_text, 1800)
 
 
+def get_supported_ncaa_sport_slugs() -> list[str]:
+    """Return the NCAA-backed sport slugs currently supported for USF updates."""
+    return [
+        "football",
+        "basketball-men",
+        "basketball-women",
+        "baseball",
+        "softball",
+        "soccer-men",
+        "soccer-women",
+        "volleyball",
+        "volleyball-women",
+        "track-field",
+    ]
+
+
 def fetch_ncaa_sport_summary(sport_slug: str, division: str = "fbs") -> str:
     """Try a few NCAA scoreboard and schedule routes for a sport."""
     year = datetime.now().year
-    candidates = [
-        f"/scoreboard/{sport_slug}/{division}/{year}/all-conf",
-        f"/scoreboard/{sport_slug}/{division}/{year}/1/all-conf",
-        f"/scoreboard/{sport_slug}/{division}/{year}/2/all-conf",
-        f"/scoreboard/{sport_slug}/{division}/{year}/3/all-conf",
-        f"/schedule/{sport_slug}/{division}/{year}",
-    ]
+    path_variants = []
 
-    if sport_slug in {"basketball-men", "basketball-women", "hockey-men", "hockey-women", "baseball", "softball", "soccer-men", "soccer-women"}:
-        candidates = [
+    if sport_slug == "football":
+        division = "fbs"
+        path_variants = [
+            f"/scoreboard/{sport_slug}/{division}/{year}/all-conf",
+            f"/scoreboard/{sport_slug}/{division}/{year}/1/all-conf",
+            f"/schedule/{sport_slug}/{division}/{year}",
+        ]
+    elif sport_slug in {"basketball-men", "basketball-women", "baseball", "softball", "soccer-men", "soccer-women", "volleyball", "volleyball-women"}:
+        path_variants = [
             f"/scoreboard/{sport_slug}/{division}/{year}/all-conf",
             f"/schedule/{sport_slug}/{division}/{year}",
             f"/scoreboard/{sport_slug}/{division}/{year}/1/all-conf",
         ]
+    else:
+        path_variants = [
+            f"/scoreboard/{sport_slug}/{division}/{year}/all-conf",
+            f"/schedule/{sport_slug}/{division}/{year}",
+        ]
 
-    for path in candidates:
+    for path in path_variants:
         try:
             payload = fetch_ncaa_json(path)
             summary = extract_ncaa_game_summary(payload)
@@ -790,7 +812,7 @@ async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division
     """Fetch NCAA game info for a sport first, then fall back to the generic USF search path."""
     try:
         ncaa_summary = fetch_ncaa_sport_summary(sport_slug, division)
-        if "I couldn’t find any NCAA game data right now." not in ncaa_summary and "Away team vs Home team" not in ncaa_summary and "away team" not in ncaa_summary.lower():
+        if "I couldn’t find any NCAA game data right now." not in ncaa_summary and "I couldn’t find any USF-related NCAA game data right now." not in ncaa_summary and "Away team vs Home team" not in ncaa_summary and "away team" not in ncaa_summary.lower():
             await ctx.send(safe_discord_text(f"**{label}**\n{ncaa_summary}", 3900))
             return
     except Exception:
@@ -799,34 +821,39 @@ async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division
     await send_usf_topic_answer(ctx, fallback_topic)
 
 
+async def send_ncaa_sport_command(ctx: commands.Context, sport_slug: str, division: str, label: str, fallback_topic: str):
+    """Shared campus sports handler backed by the NCAA data API."""
+    await send_usf_sport_answer(ctx, sport_slug, division, fallback_topic, label)
+
+
 @bot.command()
 async def football(ctx: commands.Context):
-    await send_usf_sport_answer(ctx, "football", "fbs", "football schedule and upcoming games", "USF Football")
+    await send_ncaa_sport_command(ctx, "football", "fbs", "USF Football", "football schedule and upcoming games")
 
 
 @bot.command()
 async def basketball(ctx: commands.Context):
-    await send_usf_sport_answer(ctx, "basketball-men", "d1", "men's basketball schedule and upcoming games", "USF Basketball")
+    await send_ncaa_sport_command(ctx, "basketball-men", "d1", "USF Basketball", "men's basketball schedule and upcoming games")
 
 
 @bot.command()
 async def baseball(ctx: commands.Context):
-    await send_usf_sport_answer(ctx, "baseball", "d1", "baseball schedule and upcoming games", "USF Baseball")
+    await send_ncaa_sport_command(ctx, "baseball", "d1", "USF Baseball", "baseball schedule and upcoming games")
 
 
 @bot.command()
 async def softball(ctx: commands.Context):
-    await send_usf_sport_answer(ctx, "softball", "d1", "softball schedule and upcoming games", "USF Softball")
+    await send_ncaa_sport_command(ctx, "softball", "d1", "USF Softball", "softball schedule and upcoming games")
 
 
 @bot.command()
 async def soccer(ctx: commands.Context):
-    await send_usf_sport_answer(ctx, "soccer-men", "d1", "soccer schedule and upcoming games", "USF Soccer")
+    await send_ncaa_sport_command(ctx, "soccer-men", "d1", "USF Soccer", "soccer schedule and upcoming games")
 
 
 @bot.command()
 async def volleyball(ctx: commands.Context):
-    await send_usf_sport_answer(ctx, "volleyball", "d1", "volleyball schedule and upcoming games", "USF Volleyball")
+    await send_ncaa_sport_command(ctx, "volleyball", "d1", "USF Volleyball", "volleyball schedule and upcoming games")
 
 
 @bot.command(hidden=True)
