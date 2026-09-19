@@ -140,83 +140,44 @@ def extract_ncaa_game_summary(payload):
         return "I couldn’t find any USF-related NCAA game data right now."
 
     usf_matches = []
-    for game in games[:10]:
+    for entry in games[:10]:
+        game = entry.get("game") if isinstance(entry, dict) and isinstance(entry.get("game"), dict) else entry
         if not isinstance(game, dict):
             continue
 
-        competitions = game.get("competitions")
-        names = []
-        if isinstance(competitions, list):
-            for comp in competitions:
-                if not isinstance(comp, dict):
-                    continue
-                competitors = comp.get("competitors") or []
-                for team in competitors:
-                    if not isinstance(team, dict):
-                        continue
-                    team_name = (
-                        team.get("team", {}).get("displayName")
-                        or team.get("team", {}).get("shortName")
-                        or team.get("team", {}).get("name")
-                        or team.get("displayName")
-                        or team.get("name")
-                        or ""
-                    )
-                    if team_name:
-                        names.append(team_name)
+        home = game.get("home") or game.get("homeTeam") or game.get("home_team") or {}
+        away = game.get("away") or game.get("awayTeam") or game.get("away_team") or {}
 
-        if not names:
-            home = game.get("homeTeam") or game.get("home_team") or game.get("home") or {}
-            away = game.get("awayTeam") or game.get("away_team") or game.get("away") or {}
-            if isinstance(home, dict):
-                names.append(home.get("name") or home.get("displayName") or home.get("school") or home.get("team") or "")
-            if isinstance(away, dict):
-                names.append(away.get("name") or away.get("displayName") or away.get("school") or away.get("team") or "")
+        home_names = home.get("names") if isinstance(home, dict) else {}
+        away_names = away.get("names") if isinstance(away, dict) else {}
 
+        home_name = (
+            (home_names.get("full") if isinstance(home_names, dict) else "")
+            or (home_names.get("short") if isinstance(home_names, dict) else "")
+            or home.get("name")
+            or home.get("displayName")
+            or home.get("school")
+            or ""
+        )
+        away_name = (
+            (away_names.get("full") if isinstance(away_names, dict) else "")
+            or (away_names.get("short") if isinstance(away_names, dict) else "")
+            or away.get("name")
+            or away.get("displayName")
+            or away.get("school")
+            or ""
+        )
+
+        names = [home_name, away_name]
         if not any(is_usf_team_name(name) for name in names):
             continue
-
-        home_name = ""
-        away_name = ""
-        if isinstance(competitions, list):
-            for comp in competitions:
-                if not isinstance(comp, dict):
-                    continue
-                competitors = comp.get("competitors") or []
-                for team in competitors:
-                    if not isinstance(team, dict):
-                        continue
-                    team_name = (
-                        team.get("team", {}).get("displayName")
-                        or team.get("team", {}).get("shortName")
-                        or team.get("team", {}).get("name")
-                        or team.get("displayName")
-                        or team.get("name")
-                        or ""
-                    )
-                    if not team_name:
-                        continue
-                    if team.get("homeAway") == "home":
-                        home_name = team_name
-                    elif team.get("homeAway") == "away":
-                        away_name = team_name
-                if home_name and away_name:
-                    break
-
-        if not home_name or not away_name:
-            home = game.get("homeTeam") or game.get("home_team") or game.get("home") or {}
-            away = game.get("awayTeam") or game.get("away_team") or game.get("away") or {}
-            if isinstance(home, dict):
-                home_name = home.get("name") or home.get("displayName") or home.get("school") or home.get("team") or ""
-            if isinstance(away, dict):
-                away_name = away.get("name") or away.get("displayName") or away.get("school") or away.get("team") or ""
 
         generic_names = {"", "home team", "away team", "team"}
         if not away_name or not home_name or away_name.lower() in generic_names or home_name.lower() in generic_names:
             continue
 
-        status = game.get("status") or game.get("state") or "Status unknown"
-        start_time = game.get("startTime") or game.get("start_time") or game.get("date") or ""
+        status = game.get("gameState") or game.get("status") or game.get("state") or "Status unknown"
+        start_time = game.get("startDate") or game.get("startTime") or game.get("start_time") or game.get("date") or ""
         if start_time and "T" in start_time:
             start_time = start_time.split("T", 1)[0]
         if start_time:
@@ -252,23 +213,46 @@ def extract_next_usf_game(payload):
     elif isinstance(payload, list):
         games = payload
 
-    for game in games:
+    for entry in games:
+        game = entry.get("game") if isinstance(entry, dict) and isinstance(entry.get("game"), dict) else entry
         if not isinstance(game, dict):
             continue
 
-        home = game.get("homeTeam") or game.get("home_team") or game.get("home") or {}
-        away = game.get("awayTeam") or game.get("away_team") or game.get("away") or {}
-        home_name = home.get("name") or home.get("displayName") or home.get("school") or ""
-        away_name = away.get("name") or away.get("displayName") or away.get("school") or ""
+        home = game.get("home") or game.get("homeTeam") or game.get("home_team") or {}
+        away = game.get("away") or game.get("awayTeam") or game.get("away_team") or {}
+
+        home_names = home.get("names") if isinstance(home, dict) else {}
+        away_names = away.get("names") if isinstance(away, dict) else {}
+
+        home_name = (
+            (home_names.get("full") if isinstance(home_names, dict) else "")
+            or (home_names.get("short") if isinstance(home_names, dict) else "")
+            or home.get("name")
+            or home.get("displayName")
+            or home.get("school")
+            or ""
+        )
+        away_name = (
+            (away_names.get("full") if isinstance(away_names, dict) else "")
+            or (away_names.get("short") if isinstance(away_names, dict) else "")
+            or away.get("name")
+            or away.get("displayName")
+            or away.get("school")
+            or ""
+        )
 
         if not any(is_usf_team_name(name) for name in (home_name, away_name)):
             continue
 
-        if not home_name or not away_name or home_name.lower() in {"home team", "away team", "team"} or away_name.lower() in {"home team", "away team", "team"}:
+        if not home_name or not away_name:
             continue
 
-        status = game.get("status") or game.get("state") or "Status unknown"
-        start_time = game.get("startTime") or game.get("start_time") or game.get("date") or ""
+        generic_names = {"", "home team", "away team", "team"}
+        if home_name.lower() in generic_names or away_name.lower() in generic_names:
+            continue
+
+        status = game.get("gameState") or game.get("status") or game.get("state") or "Status unknown"
+        start_time = game.get("startDate") or game.get("startTime") or game.get("start_time") or game.get("date") or ""
         if start_time and "T" in start_time:
             start_time = start_time.split("T", 1)[0]
 
