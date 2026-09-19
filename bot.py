@@ -809,20 +809,21 @@ async def today(ctx: commands.Context):
 
 
 async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division: str, fallback_topic: str, label: str):
-    """Fetch NCAA game info for a sport first, then fall back to the generic USF search path."""
+    """Use only the NCAA API for USF sports data; do not fall back to Groq or web search."""
     try:
         ncaa_summary = fetch_ncaa_sport_summary(sport_slug, division)
         if "I couldn’t find any NCAA game data right now." not in ncaa_summary and "I couldn’t find any USF-related NCAA game data right now." not in ncaa_summary and "Away team vs Home team" not in ncaa_summary and "away team" not in ncaa_summary.lower():
             await ctx.send(safe_discord_text(f"**{label}**\n{ncaa_summary}", 3900))
             return
-    except Exception:
-        pass
 
-    await send_usf_topic_answer(ctx, fallback_topic)
+        await ctx.send(safe_discord_text(f"**{label}**\nI couldn’t find any current USF NCAA game data right now.", 1900))
+        return
+    except Exception:
+        await ctx.send(safe_discord_text(f"**{label}**\nI couldn’t find any current USF NCAA game data right now.", 1900))
 
 
 async def send_ncaa_sport_command(ctx: commands.Context, sport_slug: str, division: str, label: str, fallback_topic: str):
-    """Shared campus sports handler backed by the NCAA data API."""
+    """Shared campus sports handler backed by the NCAA data API only."""
     await send_usf_sport_answer(ctx, sport_slug, division, fallback_topic, label)
 
 

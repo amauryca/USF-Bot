@@ -91,3 +91,33 @@ def test_get_supported_ncaa_sport_slugs_includes_core_usf_sports():
     assert "softball" in sport_slugs
     assert "soccer-men" in sport_slugs
     assert "volleyball" in sport_slugs
+
+
+def test_send_usf_sport_answer_uses_ncaa_only(monkeypatch):
+    class FakeCtx:
+        def __init__(self):
+            self.sent = None
+
+        async def send(self, message):
+            self.sent = message
+
+    ctx = FakeCtx()
+    fallback_called = {"value": False}
+
+    monkeypatch.setattr(
+        bot,
+        "fetch_ncaa_sport_summary",
+        lambda *args, **kwargs: "USF Bulls vs UCF Knights — Scheduled (2026-09-26)",
+    )
+
+    async def fake_fallback(*args, **kwargs):
+        fallback_called["value"] = True
+
+    monkeypatch.setattr(bot, "send_usf_topic_answer", fake_fallback)
+
+    import asyncio
+    asyncio.run(bot.send_usf_sport_answer(ctx, "football", "fbs", "football", "USF Football"))
+
+    assert "USF Football" in ctx.sent
+    assert "USF Bulls" in ctx.sent
+    assert fallback_called["value"] is False
