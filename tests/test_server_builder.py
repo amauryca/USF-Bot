@@ -63,8 +63,20 @@ def test_extract_ncaa_game_summary_handles_usf_games():
 
 def test_build_command_pages_splits_large_command_lists():
     pages = bot.build_command_pages()
+    all_text = "\n".join(pages)
 
     assert len(pages) > 1
     assert all(len(page) <= 1900 for page in pages)
     assert "**General**" in pages[0]
-    assert "**USF & Campus**" in pages[-1]
+    assert "USF Bot Command Guide" in all_text
+    assert "!ask" in all_text
+    assert "!search" in all_text
+    assert "!today" in all_text
+    assert "!football" in all_text
+    assert "!create_channel" in all_text
+    assert "!lockdown" in all_text
+    assert "!ban" in all_text
+    assert "!campus" not in all_text
+    assert "!dining" not in all_text
+    assert "!parking" not in all_text
+    assert "!admissions" not in all_text

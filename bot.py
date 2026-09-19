@@ -101,52 +101,136 @@ def fetch_ncaa_json(path: str):
         return json.loads(response.read().decode("utf-8", "ignore"))
 
 
+def safe_discord_text(text: str, max_chars: int = 3800) -> str:
+    """Keep Discord payloads under the character limit."""
+    cleaned = " ".join(str(text or "").split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+def is_usf_team_name(name: str) -> bool:
+    """Recognize likely USF team names in NCAA payloads."""
+    if not name:
+        return False
+    normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+    return "usf" in normalized or "southflorida" in normalized or "bulls" in normalized
+
+
 def extract_ncaa_game_summary(payload):
-    """Normalize different NCAA API payload shapes into a readable game summary."""
+    """Normalize different NCAA API payload shapes into a readable USF game summary."""
     if not payload:
-        return "I couldn’t find any NCAA game data right now."
+        return "I couldn’t find any USF-related NCAA game data right now."
 
     games = []
     if isinstance(payload, dict):
-        if isinstance(payload.get("games"), list):
-            games = payload["games"]
-        elif isinstance(payload.get("gamesByDate"), dict):
-            for value in payload["gamesByDate"].values():
+        for key in ("games", "items", "data", "scoreboard", "events"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                games.extend(value)
+        games_by_date = payload.get("gamesByDate")
+        if isinstance(games_by_date, dict):
+            for value in games_by_date.values():
                 if isinstance(value, list):
                     games.extend(value)
-        elif isinstance(payload.get("items"), list):
-            games = payload["items"]
-        elif isinstance(payload.get("data"), list):
-            games = payload["data"]
-        elif isinstance(payload.get("scoreboard"), list):
-            games = payload["scoreboard"]
-
-    if not games and isinstance(payload, list):
+    elif isinstance(payload, list):
         games = payload
 
     if not games:
-        return "I couldn’t find any NCAA game data right now."
+        return "I couldn’t find any USF-related NCAA game data right now."
 
-    lines = []
-    for game in games[:5]:
+    usf_matches = []
+    for game in games[:10]:
         if not isinstance(game, dict):
             continue
 
-        home = game.get("homeTeam") or game.get("home_team") or {}
-        away = game.get("awayTeam") or game.get("away_team") or {}
-        home_name = home.get("name") or home.get("school") or home.get("team") or "Home team"
-        away_name = away.get("name") or away.get("school") or away.get("team") or "Away team"
+        competitions = game.get("competitions")
+        names = []
+        if isinstance(competitions, list):
+            for comp in competitions:
+                if not isinstance(comp, dict):
+                    continue
+                competitors = comp.get("competitors") or []
+                for team in competitors:
+                    if not isinstance(team, dict):
+                        continue
+                    team_name = (
+                        team.get("team", {}).get("displayName")
+                        or team.get("team", {}).get("shortName")
+                        or team.get("team", {}).get("name")
+                        or team.get("displayName")
+                        or team.get("name")
+                        or ""
+                    )
+                    if team_name:
+                        names.append(team_name)
+
+        if not names:
+            home = game.get("homeTeam") or game.get("home_team") or game.get("home") or {}
+            away = game.get("awayTeam") or game.get("away_team") or game.get("away") or {}
+            if isinstance(home, dict):
+                names.append(home.get("name") or home.get("displayName") or home.get("school") or home.get("team") or "")
+            if isinstance(away, dict):
+                names.append(away.get("name") or away.get("displayName") or away.get("school") or away.get("team") or "")
+
+        if not any(is_usf_team_name(name) for name in names):
+            continue
+
+        home_name = ""
+        away_name = ""
+        if isinstance(competitions, list):
+            for comp in competitions:
+                if not isinstance(comp, dict):
+                    continue
+                competitors = comp.get("competitors") or []
+                for team in competitors:
+                    if not isinstance(team, dict):
+                        continue
+                    team_name = (
+                        team.get("team", {}).get("displayName")
+                        or team.get("team", {}).get("shortName")
+                        or team.get("team", {}).get("name")
+                        or team.get("displayName")
+                        or team.get("name")
+                        or ""
+                    )
+                    if not team_name:
+                        continue
+                    if team.get("homeAway") == "home":
+                        home_name = team_name
+                    elif team.get("homeAway") == "away":
+                        away_name = team_name
+                if home_name and away_name:
+                    break
+
+        if not home_name or not away_name:
+            home = game.get("homeTeam") or game.get("home_team") or game.get("home") or {}
+            away = game.get("awayTeam") or game.get("away_team") or game.get("away") or {}
+            if isinstance(home, dict):
+                home_name = home.get("name") or home.get("displayName") or home.get("school") or home.get("team") or ""
+            if isinstance(away, dict):
+                away_name = away.get("name") or away.get("displayName") or away.get("school") or away.get("team") or ""
+
+        generic_names = {"", "home team", "away team", "team"}
+        if not away_name or not home_name or away_name.lower() in generic_names or home_name.lower() in generic_names:
+            continue
+
         status = game.get("status") or game.get("state") or "Status unknown"
         start_time = game.get("startTime") or game.get("start_time") or game.get("date") or ""
         if start_time and "T" in start_time:
             start_time = start_time.split("T", 1)[0]
         if start_time:
-            lines.append(f"{away_name} vs {home_name} — {status} ({start_time})")
+            usf_matches.append(f"{away_name} vs {home_name} — {status} ({start_time})")
         else:
-            lines.append(f"{away_name} vs {home_name} — {status}")
+            usf_matches.append(f"{away_name} vs {home_name} — {status}")
 
-    summary_text = "\n".join(lines)
-    return f"USF-related NCAA game info:\n{summary_text}" if summary_text else "I couldn’t find any NCAA game data right now."
+    if not usf_matches:
+        return "I couldn’t find any USF-related NCAA game data right now."
+
+    summary_text = "USF-related NCAA game info:\n" + "\n".join(usf_matches[:5])
+    if "Away team vs Home team" in summary_text or ("away team" in summary_text.lower() and "home team" in summary_text.lower()):
+        return "I couldn’t find any USF-related NCAA game data right now."
+    return safe_discord_text(summary_text, 1800)
 
 
 def fetch_ncaa_sport_summary(sport_slug: str, division: str = "fbs") -> str:
@@ -171,7 +255,7 @@ def fetch_ncaa_sport_summary(sport_slug: str, division: str = "fbs") -> str:
         try:
             payload = fetch_ncaa_json(path)
             summary = extract_ncaa_game_summary(payload)
-            if "I couldn’t find any NCAA game data right now." not in summary:
+            if "I couldn’t find any USF-related NCAA game data right now." not in summary and "Away team vs Home team" not in summary and "away team" not in summary.lower():
                 return summary
         except Exception:
             continue
@@ -352,53 +436,29 @@ def build_command_pages() -> list[str]:
             "**USF Bot Command Guide**\n\n"
             "**General**\n"
             "`!ping` - Check bot availability\n"
-            "`!hello` - Friendly greeting\n"
             "`!status` - Show bot status\n"
-            "`!about` - Brief bot overview\n"
             "`!commands` - Show this menu\n"
-            "`!serverinfo` - Show server details\n"
-            "`!userinfo @user` - Show user info\n"
-            "`!channelinfo` - Show current channel info\n"
-            "`!report @user <reason>` - Send a report for moderation review\n"
+            "`!ask <question>` - Ask a USF question\n"
+            "`!search <query>` - Search current USF info\n"
+            "`!today` - What's happening at USF today\n"
+            "`!football` - USF football updates\n"
+            "`!basketball` - USF basketball updates\n"
+            "`!baseball` - USF baseball updates\n"
+            "`!softball` - USF softball updates\n"
+            "`!soccer` - USF soccer updates\n"
+            "`!volleyball` - USF volleyball updates\n"
         ),
         (
-            "**Server Tools**\n"
-            "`!create_channel <name>` - Create a text channel in the current category\n"
-            "`!lockdown` - Lock the current channel to staff only\n"
+            "**Staff & Server Tools**\n"
+            "`!create_channel <name>` - Create a text channel\n"
+            "`!lockdown` - Lock current channel to staff only\n"
             "`!clear <amount>` - Delete recent messages\n"
-            "`!kick @user <reason>` - Kick a member\n"
-            "`!ban @user <reason>` - Ban a member\n"
             "`!timeout @user <minutes> [reason]` - Time out a member\n"
             "`!untimeout @user` - Remove a timeout\n"
-            "`!warn @user <reason>` - Temporarily warn a member\n"
-        ),
-        (
-            "**USF & Campus**\n"
-            "`!ask <question>` - Ask a USF question with Groq\n"
-            "`!search <query>` - Search for current USF-related info\n"
-            "`!today` - What's happening at USF today\n"
-            "`!football` - Latest USF football updates\n"
-            "`!basketball` - Men's and women's basketball updates\n"
-            "`!baseball` - Baseball schedule and scores\n"
-            "`!softball` - Softball schedule and scores\n"
-            "`!soccer` - Soccer updates\n"
-            "`!volleyball` - Volleyball schedule and scores\n"
-            "`!sports [team]` - USF sports schedule and updates\n"
-            "`!calendar` - Academic and campus events\n"
-            "`!campus [name]` - Campus information\n"
-            "`!dining` - Dining options and hours\n"
-            "`!parking` - Parking rules and garages\n"
-            "`!admissions` - Admissions information\n"
-            "`!financialaid` - Financial aid info\n"
-            "`!academic` - Academic calendar and registration\n"
-            "`!major <name>` - Learn about a major\n"
-            "`!transit` - Bull Runner and transportation\n"
-            "`!weather` - Weather near USF\n"
-            "`!news` - Latest USF news\n"
-            "`!events` - Student events and activities\n"
-            "`!resources` - Student support resources\n"
-            "`!bulls` - Fun USF trivia or fact\n"
-            "`!sources <topic>` - Official USF links\n"
+            "`!kick @user <reason>` - Kick a member\n"
+            "`!ban @user <reason>` - Ban a member\n"
+            "`!warn @user <reason>` - Warn a member\n"
+            "`!report @user <reason>` - Submit a moderation report\n"
         ),
     ]
 
@@ -468,7 +528,7 @@ async def ping(ctx: commands.Context):
     await ctx.send("Pong! 🏓 I am online and ready to help.")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def hello(ctx: commands.Context):
     await ctx.send("Hello! I’m the USF Bot! Go Bulls 🤘")
 
@@ -478,7 +538,7 @@ async def status(ctx: commands.Context):
     await ctx.send("Hello, I’m the USF Bot! Go Bulls 🤘\nI can help with USF info, server tools, and moderation.")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def about(ctx: commands.Context):
     await ctx.send(
         "**USF Bot**\n"
@@ -503,7 +563,7 @@ async def list_commands(ctx: commands.Context, page: int = 1):
         await ctx.send(message_content, view=view)
 
 
-@bot.command(name="serverinfo")
+@bot.command(name="serverinfo", hidden=True)
 async def serverinfo(ctx: commands.Context):
     guild = ctx.guild
     member_count = guild.member_count
@@ -520,7 +580,7 @@ async def serverinfo(ctx: commands.Context):
     )
 
 
-@bot.command(name="userinfo")
+@bot.command(name="userinfo", hidden=True)
 async def userinfo(ctx: commands.Context, member: discord.Member = None):
     target = member or ctx.author
     roles = " ".join(role.mention for role in target.roles[1:]) or "No extra roles"
@@ -535,7 +595,7 @@ async def userinfo(ctx: commands.Context, member: discord.Member = None):
     )
 
 
-@bot.command(name="channelinfo")
+@bot.command(name="channelinfo", hidden=True)
 async def channelinfo(ctx: commands.Context):
     channel = ctx.channel
     await ctx.send(
@@ -649,7 +709,7 @@ async def ask(ctx: commands.Context, *, question: str):
     try:
         extra_context = fetch_search_snippets(question)
         answer = await ask_ai(question, extra_context)
-        await ctx.send(answer)
+        await ctx.send(safe_discord_text(answer, 3900))
     except Exception as exc:
         message = str(exc)
         if "request_too_large" in message.lower() or "413" in message:
@@ -658,7 +718,7 @@ async def ask(ctx: commands.Context, *, question: str):
         if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
             await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
             return
-        await ctx.send(format_ai_error_message(exc))
+        await ctx.send(safe_discord_text(format_ai_error_message(exc), 2000))
 
 
 @bot.command(name="search")
@@ -692,7 +752,7 @@ async def search(ctx: commands.Context, *, query: str):
                 max_tokens=500,
             )
             answer = response.choices[0].message.content.strip()
-        await ctx.send(answer)
+        await ctx.send(safe_discord_text(answer, 3900))
     except Exception as exc:
         message = str(exc)
         if "request_too_large" in message.lower() or "413" in message:
@@ -701,7 +761,7 @@ async def search(ctx: commands.Context, *, query: str):
         if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
             await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
             return
-        await ctx.send(format_ai_error_message(exc))
+        await ctx.send(safe_discord_text(format_ai_error_message(exc), 2000))
 
 
 async def send_usf_topic_answer(ctx: commands.Context, topic: str):
@@ -709,7 +769,7 @@ async def send_usf_topic_answer(ctx: commands.Context, topic: str):
     try:
         snippets = fetch_search_snippets(f"USF {topic}")
         answer = await ask_ai(f"What is the latest information about USF {topic}?", snippets)
-        await ctx.send(answer)
+        await ctx.send(safe_discord_text(answer, 3900))
     except Exception as exc:
         message = str(exc)
         if "request_too_large" in message.lower() or "413" in message:
@@ -718,7 +778,7 @@ async def send_usf_topic_answer(ctx: commands.Context, topic: str):
         if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
             await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
             return
-        await ctx.send(format_ai_error_message(exc))
+        await ctx.send(safe_discord_text(format_ai_error_message(exc), 2000))
 
 
 @bot.command()
@@ -730,8 +790,8 @@ async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division
     """Fetch NCAA game info for a sport first, then fall back to the generic USF search path."""
     try:
         ncaa_summary = fetch_ncaa_sport_summary(sport_slug, division)
-        if "I couldn’t find any NCAA game data right now." not in ncaa_summary:
-            await ctx.send(f"**{label}**\n{ncaa_summary}")
+        if "I couldn’t find any NCAA game data right now." not in ncaa_summary and "Away team vs Home team" not in ncaa_summary and "away team" not in ncaa_summary.lower():
+            await ctx.send(safe_discord_text(f"**{label}**\n{ncaa_summary}", 3900))
             return
     except Exception:
         pass
@@ -769,82 +829,82 @@ async def volleyball(ctx: commands.Context):
     await send_usf_sport_answer(ctx, "volleyball", "d1", "volleyball schedule and upcoming games", "USF Volleyball")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def sports(ctx: commands.Context, *, team: str = "all sports"):
     await send_usf_topic_answer(ctx, f"{team} sports schedule and upcoming games")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def calendar(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "academic calendar, deadlines, and upcoming campus events")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def campus(ctx: commands.Context, *, name: str = "all campuses"):
     await send_usf_topic_answer(ctx, f"{name} campus information")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def dining(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "dining locations, menus, and hours")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def parking(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "parking permits, rules, garages, and availability")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def admissions(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "admissions requirements and application deadlines")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def financialaid(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "financial aid, FAFSA, scholarships, and grants")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def academic(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "academic calendar, registration, drop dates, and exams")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def major(ctx: commands.Context, *, name: str):
     await send_usf_topic_answer(ctx, f"the {name} major or program")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def transit(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "Bull Runner routes and transportation")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def weather(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "current weather near the Tampa campus")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def news(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "latest news and announcements")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def events(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "student events, clubs, and campus activities")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def resources(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "counseling, tutoring, health services, and student support")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def bulls(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "a fun fact or trivia question about USF")
 
 
-@bot.command()
+@bot.command(hidden=True)
 async def sources(ctx: commands.Context, *, topic: str):
     official_sources = {
         "general": "https://www.usf.edu/",
