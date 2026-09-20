@@ -91,6 +91,7 @@ def trim_text_for_model(text: str, max_chars: int = 2200) -> str:
 
 
 NCAA_API_BASE = "https://ncaa-api.henrygd.me"
+SEARXNG_URL = os.getenv("SEARXNG_URL", "").rstrip("/")
 
 
 def fetch_ncaa_json(path: str):
@@ -316,8 +317,52 @@ def fetch_ncaa_sport_summary(sport_slug: str, division: str = "fbs") -> str:
     return "I couldn’t find any NCAA game data right now."
 
 
+def _fetch_searxng_snippets(query: str, max_results: int = 2) -> list[str]:
+    """Query a local SearxNG instance if configured, returning a list of search result snippets."""
+    if not SEARXNG_URL:
+        return []
+
+    try:
+        params = {
+            "q": query,
+            "format": "json",
+            "language": "en-US",
+            "engines": "google,bing,duckduckgo",
+            "categories": "general",
+        }
+        search_url = f"{SEARXNG_URL}/search?" + "&".join(f"{key}={quote(str(value))}" for key, value in params.items())
+        request = Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, timeout=12) as response:
+            payload = json.loads(response.read().decode("utf-8", "ignore"))
+
+        results = payload.get("results") or []
+        snippets = []
+        for item in results[:max_results]:
+            title = str(item.get("title") or "").strip()
+            snippet = str(item.get("content") or item.get("snippet") or "").strip()
+            if title or snippet:
+                combined = f"{title} — {snippet}".strip(" — ")
+                snippets.append(trim_text_for_model(combined, 280))
+        return snippets
+    except Exception:
+        return []
+
+
 def fetch_search_snippets(query: str, max_results: int = 2) -> str:
-    """Try a lightweight web search to gather current info for USF questions."""
+    """Try SearxNG first, then fall back to DuckDuckGo for current USF information."""
+    for loader in (_fetch_searxng_snippets, lambda q, r: _fetch_duckduckgo_snippets(q, r)):
+        try:
+            snippets = loader(query, max_results)
+        except TypeError:
+            snippets = loader(query, max_results=max_results)
+        if snippets:
+            return "\n\n".join(snippets)
+
+    return "No live web snippets were available for this query. Use official USF sources for final verification."
+
+
+def _fetch_duckduckgo_snippets(query: str, max_results: int = 2) -> list[str]:
+    """Fallback search provider used when SearxNG is unavailable or not configured."""
     try:
         search_url = "https://duckduckgo.com/html/?q=" + quote(query)
         request = Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
@@ -336,13 +381,9 @@ def fetch_search_snippets(query: str, max_results: int = 2) -> str:
             if clean_title or clean_snippet:
                 combined = f"{clean_title} — {clean_snippet}"
                 snippets.append(trim_text_for_model(combined, 280))
-
-        if snippets:
-            return "\n\n".join(snippets)
+        return snippets
     except Exception:
-        pass
-
-    return "No live web snippets were available for this query. Use official USF sources for final verification."
+        return []
 
 
 SLUR_PATTERNS = [

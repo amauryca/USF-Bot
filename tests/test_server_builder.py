@@ -21,6 +21,29 @@ def test_contains_slur_detects_common_offensive_terms():
     assert bot.contains_slur("this is a friendly message") is False
 
 
+def test_fetch_search_snippets_prefers_searxng_when_configured(monkeypatch):
+    monkeypatch.setattr(bot, "SEARXNG_URL", "https://searxng.local")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"results":[{"title":"USF official page","content":"Updated campus information for students"}]}'
+
+    def fake_urlopen(request, timeout):
+        return FakeResponse()
+
+    monkeypatch.setattr(bot, "urlopen", fake_urlopen)
+    result = bot.fetch_search_snippets("USF campus events")
+
+    assert "USF official page" in result
+    assert "Updated campus information" in result
+
+
 def test_trim_text_for_model_truncates_long_text():
     long_text = "word " * 5000
     trimmed = bot.trim_text_for_model(long_text, 200)
