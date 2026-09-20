@@ -65,8 +65,19 @@ def test_is_prompt_too_large_error_only_flags_real_size_limits():
     assert bot.is_prompt_too_large_error("The live search context is a bit too large for the model right now. Try a shorter search or ask again with a more specific USF question.") is False
 
 
-def test_get_ai_provider_defaults_to_groq():
-    assert bot.get_ai_provider() == "groq"
+def test_get_ai_provider_defaults_to_google_or_searxng_not_groq():
+    assert bot.get_ai_provider() == "google"
+
+
+def test_summarize_search_results_uses_searxng_snippets():
+    answer = bot.summarize_search_results(
+        "usf football",
+        "USF Athletics — Upcoming Event: Football versus Delaware State on Sep 19, 2026 at 7 p.m.\nESPN — South Florida Bulls team page with current football updates.",
+    )
+
+    assert "USF" in answer
+    assert "football" in answer.lower()
+    assert "Delaware State" in answer
 
 
 def test_build_usf_context_prompt_is_usf_first_and_positive():

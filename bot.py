@@ -29,7 +29,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-AI_PROVIDER = os.getenv("AI_PROVIDER", "groq").lower()
+AI_PROVIDER = os.getenv("AI_PROVIDER", "google").lower()
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is not set. Add it to your .env file or host's env vars.")
@@ -47,7 +47,12 @@ groq_client = Groq(api_key=GROQ_API_KEY) if Groq and GROQ_API_KEY else None
 
 
 def get_ai_provider() -> str:
-    return os.getenv("AI_PROVIDER", "groq").lower()
+    provider = os.getenv("AI_PROVIDER", "google").lower()
+    if provider == "groq":
+        return "google"
+    if provider in {"", "searxng", "search"}:
+        return "google"
+    return provider
 
 
 def get_groq_model_candidates() -> list[str]:
@@ -101,6 +106,26 @@ def build_context_prompt(question: str, extra_context: str = "", max_context_cha
         if compact_context:
             prompt += f"\n\nCurrent web context:\n{compact_context}"
     return prompt
+
+
+def summarize_search_results(query: str, context: str) -> str:
+    """Turn SearxNG results into a concise USF answer without depending on Groq or Gemini."""
+    lines = [line.strip() for line in str(context or "").splitlines() if line.strip()]
+    top = []
+    seen = set()
+    for line in lines[:6]:
+        clean = re.sub(r"\s+", " ", line)
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        top.append(clean)
+
+    joined = "\n".join(top) if top else "No live results were found for that query." 
+    return (
+        f"Here’s the latest USF-related info I found for '{query}':\n\n"
+        f"{joined}\n\n"
+        "Use the official USF athletics or university pages for final confirmation."
+    )
 
 
 NCAA_API_BASE = "https://ncaa-api.henrygd.me"
@@ -905,7 +930,7 @@ async def ping(ctx: commands.Context):
 
 @bot.command(hidden=True)
 async def hello(ctx: commands.Context):
-    await ctx.send("Hello! I’m the USF Bot! Go Bulls 🤘")
+    await ctx.send("Hello! I’m the USF Bot! Go Bulls 🤘 This bot is built for USF news, schedules, and server help.")
 
 
 @bot.command()
@@ -1082,21 +1107,14 @@ async def ask(ctx: commands.Context, *, question: str):
         return
 
     try:
-        extra_context = fetch_search_snippets(question)
-        answer = await ask_ai(question, extra_context)
+        snippets = fetch_search_snippets(question)
+        if not snippets or "No live web snippets" in snippets:
+            await ctx.send("🔎 I couldn’t pull live results for that topic, but I can still help with the USF angle if you ask directly.")
+            return
+        answer = summarize_search_results(question, snippets)
         await ctx.send(safe_discord_text(answer, 3900))
     except Exception as exc:
-        message = str(exc)
-        if is_prompt_too_large_error(exc):
-            if len(question.strip()) <= 250:
-                await ctx.send("⚠️ The live search context is a bit too large for the model right now. Try a shorter search or ask again with a more specific USF question.")
-            else:
-                await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
-            return
-        if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
-            await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
-            return
-        await ctx.send(safe_discord_text(format_ai_error_message(exc), 2000))
+        await ctx.send("⚠️ I couldn’t fetch current USF search results right now. Try a shorter or more specific question.")
 
 
 @bot.command(name="search")
@@ -1108,58 +1126,25 @@ async def search(ctx: commands.Context, *, query: str):
     try:
         snippets = fetch_search_snippets(query)
         if not snippets or "No live web snippets" in snippets:
-            await ctx.send("🔎 I couldn’t pull live results for that topic, but I can still answer from the USF context if you ask directly.")
+            await ctx.send("🔎 I couldn’t pull live results for that topic, but I can still help with the USF angle if you ask directly.")
             return
-
-        safe_query = trim_text_for_model(query, 400)
-        prompt = (
-            "You are a helpful USF assistant. Use the web snippets below to answer the user's query. "
-            "Be concise, cite that the information may need final verification, and stay focused on USF-related facts.\n\n"
-            f"Web snippets:\n{trim_text_for_model(snippets, 700)}\n\nUser query: {safe_query}"
-        )
-        if get_ai_provider() == "google":
-            answer = await ask_google(safe_query, snippets)
-        else:
-            response = groq_client.chat.completions.create(
-                model=get_groq_model_candidates()[0],
-                messages=[
-                    {"role": "system", "content": trim_text_for_model(prompt, 1800)},
-                    {"role": "user", "content": safe_query},
-                ],
-                temperature=0.7,
-                max_tokens=500,
-            )
-            answer = response.choices[0].message.content.strip()
+        answer = summarize_search_results(query, snippets)
         await ctx.send(safe_discord_text(answer, 3900))
-    except Exception as exc:
-        message = str(exc)
-        if is_prompt_too_large_error(exc):
-            if len(query.strip()) <= 250:
-                await ctx.send("⚠️ The live search context is a bit too large for the model right now. Try a shorter search or ask again with a more specific USF question.")
-            else:
-                await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
-            return
-        if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
-            await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
-            return
-        await ctx.send(safe_discord_text(format_ai_error_message(exc), 2000))
+    except Exception:
+        await ctx.send("⚠️ I couldn’t fetch current USF search results right now. Try a shorter or more specific question.")
 
 
 async def send_usf_topic_answer(ctx: commands.Context, topic: str):
-    """Answer a preset USF topic using live snippets and Groq."""
+    """Answer a preset USF topic using live SearxNG snippets only."""
     try:
         snippets = fetch_search_snippets(f"USF {topic}")
-        answer = await ask_ai(f"What is the latest information about USF {topic}?", snippets)
+        if not snippets or "No live web snippets" in snippets:
+            await ctx.send("🔎 I couldn’t pull live results for that USF topic right now, but official USF pages are the best final source.")
+            return
+        answer = summarize_search_results(f"USF {topic}", snippets)
         await ctx.send(safe_discord_text(answer, 3900))
-    except Exception as exc:
-        message = str(exc)
-        if is_prompt_too_large_error(exc):
-            await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
-            return
-        if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
-            await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
-            return
-        await ctx.send(safe_discord_text(format_ai_error_message(exc), 2000))
+    except Exception:
+        await ctx.send("⚠️ I couldn’t fetch the live USF results right now. Try a more specific question.")
 
 
 @bot.command()
