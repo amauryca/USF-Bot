@@ -92,6 +92,7 @@ def trim_text_for_model(text: str, max_chars: int = 2200) -> str:
 
 NCAA_API_BASE = "https://ncaa-api.henrygd.me"
 SEARXNG_URL = os.getenv("SEARXNG_URL", "").rstrip("/")
+SEARXNG_CLIENT_IP = os.getenv("SEARXNG_CLIENT_IP", "8.8.8.8")
 
 
 def fetch_ncaa_json(path: str):
@@ -544,7 +545,21 @@ def _fetch_searxng_snippets(query: str, max_results: int = 2) -> list[str]:
         }
         query_string = "&".join(f"{key}={quote(str(value))}" for key, value in params.items())
         search_url = f"{SEARXNG_URL}/search?{query_string}"
-        request = Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/127.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/html, application/xhtml+xml, */*; q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": SEARXNG_URL,
+            "X-Forwarded-For": SEARXNG_CLIENT_IP,
+            "X-Real-IP": SEARXNG_CLIENT_IP,
+            "Upgrade-Insecure-Requests": "1",
+            "Connection": "keep-alive",
+        }
+        request = Request(search_url, headers=headers)
         with urlopen(request, timeout=12) as response:
             payload = json.loads(response.read().decode("utf-8", "ignore"))
 

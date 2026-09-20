@@ -35,6 +35,10 @@ def test_fetch_search_snippets_prefers_searxng_when_configured(monkeypatch):
             return b'{"results":[{"title":"USF official page","content":"Updated campus information for students"}]}'
 
     def fake_urlopen(request, timeout):
+        headers = request.headers
+        assert headers["User-agent"].startswith("Mozilla/")
+        assert headers.get("X-forwarded-for") == bot.SEARXNG_CLIENT_IP
+        assert headers.get("X-real-ip") == bot.SEARXNG_CLIENT_IP
         return FakeResponse()
 
     monkeypatch.setattr(bot, "urlopen", fake_urlopen)
