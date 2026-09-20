@@ -61,6 +61,8 @@ def test_is_prompt_too_large_error_only_flags_real_size_limits():
     assert bot.is_prompt_too_large_error("context too large for this model") is True
     assert bot.is_prompt_too_large_error("The request timed out while fetching search results.") is False
     assert bot.is_prompt_too_large_error("that question is a bit too long for the model") is False
+    assert bot.is_prompt_too_large_error("The live search context too large for the model right now. Try a shorter search.") is False
+    assert bot.is_prompt_too_large_error("The live search context is a bit too large for the model right now. Try a shorter search or ask again with a more specific USF question.") is False
 
 
 def test_get_ai_provider_defaults_to_groq():

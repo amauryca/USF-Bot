@@ -734,10 +734,23 @@ async def ask_ai(question: str, extra_context: str = "") -> str:
 def is_prompt_too_large_error(exc: Exception | str) -> bool:
     """Return True only for actual model input-size failures."""
     message = str(exc).lower()
+
+    user_facing_fallbacks = (
+        "the live search context is a bit too large for the model right now",
+        "the live search context too large for the model right now",
+        "try a shorter search or ask again with a more specific usf question",
+        "that question is a bit too long for the model",
+        "a bit too long for the model",
+        "that question is a bit too long",
+    )
+    if any(phrase in message for phrase in user_facing_fallbacks):
+        return False
+
     actual_limit_tokens = (
         "request_too_large",
         "413",
         "prompt too long",
+        "prompt too large",
         "max input",
         "must be 4000 or fewer in length",
         "must be 20000 or fewer in length",
@@ -747,6 +760,7 @@ def is_prompt_too_large_error(exc: Exception | str) -> bool:
         "too many tokens",
         "token limit",
         "maximum context",
+        "max_tokens",
     )
     if any(token in message for token in actual_limit_tokens):
         return True
