@@ -90,6 +90,19 @@ def trim_text_for_model(text: str, max_chars: int = 2200) -> str:
     return cleaned[: max_chars - 3].rstrip() + "..."
 
 
+def build_context_prompt(question: str, extra_context: str = "", max_context_chars: int = 700) -> str:
+    """Build a compact USF prompt that keeps web context under provider limits."""
+    prompt = build_usf_context_prompt(question)
+    if extra_context:
+        prompt += f"\n\nCurrent web context:\n{trim_text_for_model(extra_context, max_context_chars)}"
+    if len(prompt) > 3500:
+        prompt = build_usf_context_prompt(question)
+        compact_context = trim_text_for_model(extra_context, 400)
+        if compact_context:
+            prompt += f"\n\nCurrent web context:\n{compact_context}"
+    return prompt
+
+
 NCAA_API_BASE = "https://ncaa-api.henrygd.me"
 SEARXNG_URL = os.getenv("SEARXNG_URL", "").rstrip("/")
 SEARXNG_CLIENT_IP = os.getenv("SEARXNG_CLIENT_IP", "8.8.8.8")
@@ -664,9 +677,7 @@ async def ask_google(question: str, extra_context: str = "") -> str:
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
     model_name = get_google_model_name()
-    prompt = build_usf_context_prompt(question)
-    if extra_context:
-        prompt += f"\n\nCurrent web context:\n{trim_text_for_model(extra_context, 1800)}"
+    prompt = build_context_prompt(question, extra_context, max_context_chars=700)
 
     response = client.models.generate_content(
         model=model_name,
@@ -698,9 +709,7 @@ async def ask_groq(question: str, extra_context: str = "") -> str:
     if groq_client is None:
         raise RuntimeError("Groq is not configured for this instance. Run: pip install groq")
 
-    prompt = build_usf_context_prompt(question)
-    if extra_context:
-        prompt += f"\n\nCurrent web context:\n{trim_text_for_model(extra_context, 1800)}"
+    prompt = build_context_prompt(question, extra_context, max_context_chars=700)
 
     response = groq_client.chat.completions.create(
         model=get_groq_model_candidates()[0],
@@ -1065,7 +1074,10 @@ async def ask(ctx: commands.Context, *, question: str):
     except Exception as exc:
         message = str(exc)
         if is_prompt_too_large_error(exc):
-            await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
+            if len(question.strip()) <= 250:
+                await ctx.send("⚠️ The live search context is a bit too large for the model right now. Try a shorter search or ask again with a more specific USF question.")
+            else:
+                await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
             return
         if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
             await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
@@ -1089,7 +1101,7 @@ async def search(ctx: commands.Context, *, query: str):
         prompt = (
             "You are a helpful USF assistant. Use the web snippets below to answer the user's query. "
             "Be concise, cite that the information may need final verification, and stay focused on USF-related facts.\n\n"
-            f"Web snippets:\n{trim_text_for_model(snippets, 1800)}\n\nUser query: {safe_query}"
+            f"Web snippets:\n{trim_text_for_model(snippets, 700)}\n\nUser query: {safe_query}"
         )
         if get_ai_provider() == "google":
             answer = await ask_google(safe_query, snippets)
@@ -1097,7 +1109,7 @@ async def search(ctx: commands.Context, *, query: str):
             response = groq_client.chat.completions.create(
                 model=get_groq_model_candidates()[0],
                 messages=[
-                    {"role": "system", "content": trim_text_for_model(prompt, 2200)},
+                    {"role": "system", "content": trim_text_for_model(prompt, 1800)},
                     {"role": "user", "content": safe_query},
                 ],
                 temperature=0.7,
@@ -1108,7 +1120,10 @@ async def search(ctx: commands.Context, *, query: str):
     except Exception as exc:
         message = str(exc)
         if is_prompt_too_large_error(exc):
-            await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
+            if len(query.strip()) <= 250:
+                await ctx.send("⚠️ The live search context is a bit too large for the model right now. Try a shorter search or ask again with a more specific USF question.")
+            else:
+                await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
             return
         if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
             await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
