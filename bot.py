@@ -725,23 +725,27 @@ async def ask_ai(question: str, extra_context: str = "") -> str:
 def is_prompt_too_large_error(exc: Exception | str) -> bool:
     """Return True only for actual model input-size failures."""
     message = str(exc).lower()
-    return any(
-        token in message
-        for token in (
-            "request_too_large",
-            "413",
-            "too long",
-            "prompt too long",
-            "max input",
-            "must be 4000 or fewer in length",
-            "must be 20000 or fewer in length",
-            "input too large",
-            "context too large",
-            "too many tokens",
-            "token limit",
-            "maximum context",
-        )
+    actual_limit_tokens = (
+        "request_too_large",
+        "413",
+        "prompt too long",
+        "max input",
+        "must be 4000 or fewer in length",
+        "must be 20000 or fewer in length",
+        "input too large",
+        "context too large",
+        "context length exceeded",
+        "too many tokens",
+        "token limit",
+        "maximum context",
     )
+    if any(token in message for token in actual_limit_tokens):
+        return True
+
+    if "too long" in message and any(marker in message for marker in ("prompt", "input", "context", "token", "request", "max")):
+        return True
+
+    return False
 
 
 def format_ai_error_message(exc: Exception) -> str:

@@ -56,6 +56,13 @@ def test_trim_text_for_model_truncates_long_text():
     assert trimmed.endswith("...")
 
 
+def test_is_prompt_too_large_error_only_flags_real_size_limits():
+    assert bot.is_prompt_too_large_error("400 Bad Request: Must be 4000 or fewer in length.") is True
+    assert bot.is_prompt_too_large_error("context too large for this model") is True
+    assert bot.is_prompt_too_large_error("The request timed out while fetching search results.") is False
+    assert bot.is_prompt_too_large_error("that question is a bit too long for the model") is False
+
+
 def test_get_ai_provider_defaults_to_groq():
     assert bot.get_ai_provider() == "groq"
 
