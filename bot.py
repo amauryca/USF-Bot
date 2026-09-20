@@ -722,11 +722,35 @@ async def ask_ai(question: str, extra_context: str = "") -> str:
     return await ask_groq(question, extra_context)
 
 
+def is_prompt_too_large_error(exc: Exception | str) -> bool:
+    """Return True only for actual model input-size failures."""
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in (
+            "request_too_large",
+            "413",
+            "too long",
+            "prompt too long",
+            "max input",
+            "must be 4000 or fewer in length",
+            "must be 20000 or fewer in length",
+            "input too large",
+            "context too large",
+            "too many tokens",
+            "token limit",
+            "maximum context",
+        )
+    )
+
+
 def format_ai_error_message(exc: Exception) -> str:
     """Return a user-friendly message for provider throttling or generic failures."""
     message = str(exc).lower()
     if "rate limit reached" in message or "rate_limit_exceeded" in message or "429" in message:
         return "woah someone else is using this so like....chill out cause im answering questions wayyyy to fast"
+    if is_prompt_too_large_error(exc):
+        return "⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it."
     return f"⚠️ I couldn't answer that right now. Error: {exc}"
 
 
@@ -1036,8 +1060,8 @@ async def ask(ctx: commands.Context, *, question: str):
         await ctx.send(safe_discord_text(answer, 3900))
     except Exception as exc:
         message = str(exc)
-        if "request_too_large" in message.lower() or "413" in message:
-            await ctx.send("I’m broken because my AI is dumb and can’t handle searching this prompt because it’s too long.")
+        if is_prompt_too_large_error(exc):
+            await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
             return
         if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
             await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
@@ -1079,8 +1103,8 @@ async def search(ctx: commands.Context, *, query: str):
         await ctx.send(safe_discord_text(answer, 3900))
     except Exception as exc:
         message = str(exc)
-        if "request_too_large" in message.lower() or "413" in message:
-            await ctx.send("I’m broken because my AI is dumb and can’t handle searching this prompt because it’s too long.")
+        if is_prompt_too_large_error(exc):
+            await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
             return
         if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
             await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
@@ -1096,8 +1120,8 @@ async def send_usf_topic_answer(ctx: commands.Context, topic: str):
         await ctx.send(safe_discord_text(answer, 3900))
     except Exception as exc:
         message = str(exc)
-        if "request_too_large" in message.lower() or "413" in message:
-            await ctx.send("I’m broken because my AI is dumb and can’t handle searching this prompt because it’s too long.")
+        if is_prompt_too_large_error(exc):
+            await ctx.send("⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it.")
             return
         if "rate limit reached" in message.lower() or "rate_limit_exceeded" in message.lower() or "429" in message:
             await ctx.send("woah someone else is using this so like....chill out cause im answering questions wayyyy to fast")
