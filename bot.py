@@ -95,11 +95,17 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "").rstrip("/")
 
 
 def fetch_ncaa_json(path: str):
-    """Fetch JSON from the public NCAA API."""
+    """Fetch JSON from the public NCAA API, returning {} on network or schema failures."""
+    if not path:
+        return {}
+
     url = f"{NCAA_API_BASE.rstrip('/')}/{path.lstrip('/')}"
     request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(request, timeout=15) as response:
-        return json.loads(response.read().decode("utf-8", "ignore"))
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8", "ignore"))
+    except Exception:
+        return {}
 
 
 def safe_discord_text(text: str, max_chars: int = 3800) -> str:
@@ -115,7 +121,13 @@ def is_usf_team_name(name: str) -> bool:
     if not name:
         return False
     normalized = re.sub(r"[^a-z0-9]", "", name.lower())
-    return "usf" in normalized or "southflorida" in normalized or "bulls" in normalized
+    variants = {
+        "usf",
+        "southflorida",
+        "southfla",
+        "bulls",
+    }
+    return any(token in normalized for token in variants)
 
 
 def extract_ncaa_game_summary(payload):
@@ -196,7 +208,7 @@ def extract_ncaa_game_summary(payload):
 
 
 def extract_next_usf_game(payload):
-    """Return the next upcoming USF NCAA game as a short, readable line."""
+    """Return the next USF NCAA game when one exists, otherwise fall back to the latest USF result."""
     if not payload:
         return "I couldn’t find any upcoming USF NCAA game right now."
 
@@ -213,6 +225,9 @@ def extract_next_usf_game(payload):
                     games.extend(value)
     elif isinstance(payload, list):
         games = payload
+
+    upcoming = []
+    latest = []
 
     for entry in games:
         game = entry.get("game") if isinstance(entry, dict) and isinstance(entry.get("game"), dict) else entry
@@ -231,6 +246,7 @@ def extract_next_usf_game(payload):
             or home.get("name")
             or home.get("displayName")
             or home.get("school")
+            or home.get("char6")
             or ""
         )
         away_name = (
@@ -239,6 +255,7 @@ def extract_next_usf_game(payload):
             or away.get("name")
             or away.get("displayName")
             or away.get("school")
+            or away.get("char6")
             or ""
         )
 
@@ -252,17 +269,121 @@ def extract_next_usf_game(payload):
         if home_name.lower() in generic_names or away_name.lower() in generic_names:
             continue
 
-        status = game.get("gameState") or game.get("status") or game.get("state") or "Status unknown"
+        status = (game.get("gameState") or game.get("status") or game.get("state") or "Status unknown").lower()
         start_time = game.get("startDate") or game.get("startTime") or game.get("start_time") or game.get("date") or ""
         if start_time and "T" in start_time:
             start_time = start_time.split("T", 1)[0]
 
-        result = f"{away_name} vs {home_name} — {status}"
+        result = f"{away_name} vs {home_name} — {status.upper() if status else 'Status unknown'}"
         if start_time:
             result += f" ({start_time})"
-        return safe_discord_text(result, 300)
+
+        try:
+            parsed_date = datetime.strptime(start_time, "%Y-%m-%d") if start_time else datetime.now()
+        except ValueError:
+            parsed_date = datetime.now()
+
+        if status in {"pre", "scheduled", "pending", "not started", "tbd"} or (start_time and parsed_date >= datetime.now()):
+            upcoming.append((parsed_date, result))
+        else:
+            latest.append((parsed_date, result))
+
+    if upcoming:
+        upcoming.sort(key=lambda item: item[0])
+        return safe_discord_text(upcoming[0][1], 300)
+    if latest:
+        latest.sort(key=lambda item: item[0], reverse=True)
+        return safe_discord_text(f"Latest USF game: {latest[0][1]}", 300)
 
     return "I couldn’t find any upcoming USF NCAA game right now."
+
+
+def extract_next_any_game(payload):
+    """Return the next live NCAA game from any team, with a safe fallback if no upcoming game exists."""
+    if not payload:
+        return "I couldn’t find any upcoming NCAA game right now."
+
+    games = []
+    if isinstance(payload, dict):
+        for key in ("games", "items", "data", "scoreboard", "events"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                games.extend(value)
+        games_by_date = payload.get("gamesByDate")
+        if isinstance(games_by_date, dict):
+            for value in games_by_date.values():
+                if isinstance(value, list):
+                    games.extend(value)
+    elif isinstance(payload, list):
+        games = payload
+
+    upcoming = []
+    latest = []
+
+    for entry in games:
+        game = entry.get("game") if isinstance(entry, dict) and isinstance(entry.get("game"), dict) else entry
+        if not isinstance(game, dict):
+            continue
+
+        home = game.get("home") or game.get("homeTeam") or game.get("home_team") or {}
+        away = game.get("away") or game.get("awayTeam") or game.get("away_team") or {}
+
+        home_names = home.get("names") if isinstance(home, dict) else {}
+        away_names = away.get("names") if isinstance(away, dict) else {}
+
+        home_name = (
+            (home_names.get("full") if isinstance(home_names, dict) else "")
+            or (home_names.get("short") if isinstance(home_names, dict) else "")
+            or home.get("name")
+            or home.get("displayName")
+            or home.get("school")
+            or home.get("char6")
+            or ""
+        )
+        away_name = (
+            (away_names.get("full") if isinstance(away_names, dict) else "")
+            or (away_names.get("short") if isinstance(away_names, dict) else "")
+            or away.get("name")
+            or away.get("displayName")
+            or away.get("school")
+            or away.get("char6")
+            or ""
+        )
+
+        if not home_name or not away_name:
+            continue
+
+        generic_names = {"", "home team", "away team", "team"}
+        if home_name.lower() in generic_names or away_name.lower() in generic_names:
+            continue
+
+        status = (game.get("gameState") or game.get("status") or game.get("state") or "Status unknown").lower()
+        start_time = game.get("startDate") or game.get("startTime") or game.get("start_time") or game.get("date") or ""
+        if start_time and "T" in start_time:
+            start_time = start_time.split("T", 1)[0]
+
+        result = f"{away_name} vs {home_name} — {status.upper() if status else 'Status unknown'}"
+        if start_time:
+            result += f" ({start_time})"
+
+        try:
+            parsed_date = datetime.strptime(start_time, "%Y-%m-%d") if start_time else datetime.now()
+        except ValueError:
+            parsed_date = datetime.now()
+
+        if status in {"pre", "scheduled", "pending", "not started", "tbd"} or (start_time and parsed_date >= datetime.now()):
+            upcoming.append((parsed_date, result))
+        else:
+            latest.append((parsed_date, result))
+
+    if upcoming:
+        upcoming.sort(key=lambda item: item[0])
+        return safe_discord_text(upcoming[0][1], 300)
+    if latest:
+        latest.sort(key=lambda item: item[0], reverse=True)
+        return safe_discord_text(f"Latest NCAA game: {latest[0][1]}", 300)
+
+    return "I couldn’t find any upcoming NCAA game right now."
 
 
 def get_supported_ncaa_sport_slugs() -> list[str]:
@@ -330,7 +451,8 @@ def _fetch_searxng_snippets(query: str, max_results: int = 2) -> list[str]:
             "engines": "google,bing,duckduckgo",
             "categories": "general",
         }
-        search_url = f"{SEARXNG_URL}/search?" + "&".join(f"{key}={quote(str(value))}" for key, value in params.items())
+        query_string = "&".join(f"{key}={quote(str(value))}" for key, value in params.items())
+        search_url = f"{SEARXNG_URL}/search?{query_string}"
         request = Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
         with urlopen(request, timeout=12) as response:
             payload = json.loads(response.read().decode("utf-8", "ignore"))
@@ -350,11 +472,12 @@ def _fetch_searxng_snippets(query: str, max_results: int = 2) -> list[str]:
 
 def fetch_search_snippets(query: str, max_results: int = 2) -> str:
     """Try SearxNG first, then fall back to DuckDuckGo for current USF information."""
-    for loader in (_fetch_searxng_snippets, lambda q, r: _fetch_duckduckgo_snippets(q, r)):
-        try:
-            snippets = loader(query, max_results)
-        except TypeError:
-            snippets = loader(query, max_results=max_results)
+    loaders = [
+        _fetch_searxng_snippets,
+        _fetch_duckduckgo_snippets,
+    ]
+    for loader in loaders:
+        snippets = loader(query, max_results)
         if snippets:
             return "\n\n".join(snippets)
 
@@ -883,7 +1006,7 @@ async def today(ctx: commands.Context):
 
 @bot.command()
 async def nextgame(ctx: commands.Context):
-    """Show the next upcoming USF NCAA game from the NCAA API only."""
+    """Show the next upcoming NCAA game, preferring USF when available."""
     try:
         current_year = datetime.now().year
         payloads = []
@@ -894,20 +1017,25 @@ async def nextgame(ctx: commands.Context):
                 f"/schedule/{sport_slug}/fbs/{current_year}",
                 f"/schedule/{sport_slug}/d1/{current_year}",
             ):
-                try:
-                    payloads.append(fetch_ncaa_json(path))
-                except Exception:
-                    continue
+                payload = fetch_ncaa_json(path)
+                if payload:
+                    payloads.append(payload)
 
         for payload in payloads:
-            result = extract_next_usf_game(payload)
-            if "I couldn’t find any upcoming USF NCAA game right now." not in result and "USF" in result:
-                await ctx.send(safe_discord_text(f"**Next USF game**\n{result}", 1900))
+            usf_result = extract_next_usf_game(payload)
+            if "I couldn’t find any upcoming USF NCAA game right now." not in usf_result and "USF" in usf_result:
+                await ctx.send(safe_discord_text(f"**Next USF game**\n{usf_result}", 1900))
                 return
 
-        await ctx.send("**Next USF game**\nI couldn’t find any upcoming USF NCAA game right now.")
+        for payload in payloads:
+            generic_result = extract_next_any_game(payload)
+            if "I couldn’t find any upcoming NCAA game right now." not in generic_result:
+                await ctx.send(safe_discord_text(f"**Next live NCAA game**\n{generic_result}", 1900))
+                return
+
+        await ctx.send("**Next live NCAA game**\nI couldn’t find any upcoming NCAA game right now.")
     except Exception:
-        await ctx.send("**Next USF game**\nI couldn’t find any upcoming USF NCAA game right now.")
+        await ctx.send("**Next live NCAA game**\nI couldn’t find any upcoming NCAA game right now.")
 
 
 async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division: str, fallback_topic: str, label: str):

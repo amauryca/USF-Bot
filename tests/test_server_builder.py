@@ -170,3 +170,72 @@ def test_get_next_usf_game_uses_ncaa_payload_for_upcoming_match():
     assert "USF Bulls" in result
     assert "UCF Knights" in result
     assert "2026-09-26" in result
+
+
+def test_extract_next_usf_game_detects_live_ncaa_feed_usf_abbreviation():
+    payload = {
+        "games": [
+            {
+                "game": {
+                    "title": "South Fla. vs Temple",
+                    "home": {
+                        "names": {"char6": "USF", "short": "South Fla.", "full": ""},
+                    },
+                    "away": {
+                        "names": {"char6": "TEM", "short": "Temple", "full": ""},
+                    },
+                    "gameState": "pre",
+                    "startDate": "2026-09-19",
+                }
+            }
+        ]
+    }
+
+    result = bot.extract_next_usf_game(payload)
+
+    assert "South Fla." in result or "USF" in result
+    assert "Temple" in result
+    assert "2026-09-19" in result
+
+
+def test_extract_next_usf_game_returns_latest_game_when_no_upcoming_match_exists():
+    payload = {
+        "games": [
+            {
+                "game": {
+                    "title": "Delaware St. South Fla.",
+                    "home": {"names": {"char6": "USF", "short": "South Fla.", "full": ""}},
+                    "away": {"names": {"char6": "DEL", "short": "Delaware St.", "full": ""}},
+                    "gameState": "final",
+                    "startDate": "2026-09-19",
+                }
+            }
+        ]
+    }
+
+    result = bot.extract_next_usf_game(payload)
+
+    assert "Latest USF game" in result
+    assert "South Fla." in result or "USF" in result
+
+
+def test_extract_next_any_game_finds_non_usf_matchup():
+    payload = {
+        "games": [
+            {
+                "game": {
+                    "title": "Georgia vs Alabama",
+                    "home": {"names": {"char6": "BAMA", "short": "Alabama", "full": ""}},
+                    "away": {"names": {"char6": "UGA", "short": "Georgia", "full": ""}},
+                    "gameState": "pre",
+                    "startDate": "2026-09-21",
+                }
+            }
+        ]
+    }
+
+    result = bot.extract_next_any_game(payload)
+
+    assert "Georgia" in result
+    assert "Alabama" in result
+    assert "2026-09-21" in result
