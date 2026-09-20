@@ -207,6 +207,81 @@ def extract_ncaa_game_summary(payload):
     return safe_discord_text(summary_text, 1800)
 
 
+def extract_any_ncaa_game_summary(payload):
+    """Return the first real live NCAA matchup even when it is not USF-specific."""
+    if not payload:
+        return "I couldn’t find any NCAA game data right now."
+
+    games = []
+    if isinstance(payload, dict):
+        for key in ("games", "items", "data", "scoreboard", "events"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                games.extend(value)
+        games_by_date = payload.get("gamesByDate")
+        if isinstance(games_by_date, dict):
+            for value in games_by_date.values():
+                if isinstance(value, list):
+                    games.extend(value)
+    elif isinstance(payload, list):
+        games = payload
+
+    if not games:
+        return "I couldn’t find any NCAA game data right now."
+
+    matches = []
+    for entry in games[:10]:
+        game = entry.get("game") if isinstance(entry, dict) and isinstance(entry.get("game"), dict) else entry
+        if not isinstance(game, dict):
+            continue
+
+        home = game.get("home") or game.get("homeTeam") or game.get("home_team") or {}
+        away = game.get("away") or game.get("awayTeam") or game.get("away_team") or {}
+
+        home_names = home.get("names") if isinstance(home, dict) else {}
+        away_names = away.get("names") if isinstance(away, dict) else {}
+
+        home_name = (
+            (home_names.get("full") if isinstance(home_names, dict) else "")
+            or (home_names.get("short") if isinstance(home_names, dict) else "")
+            or home.get("name")
+            or home.get("displayName")
+            or home.get("school")
+            or home.get("char6")
+            or ""
+        )
+        away_name = (
+            (away_names.get("full") if isinstance(away_names, dict) else "")
+            or (away_names.get("short") if isinstance(away_names, dict) else "")
+            or away.get("name")
+            or away.get("displayName")
+            or away.get("school")
+            or away.get("char6")
+            or ""
+        )
+
+        generic_names = {"", "home team", "away team", "team"}
+        if not away_name or not home_name or away_name.lower() in generic_names or home_name.lower() in generic_names:
+            continue
+
+        status = game.get("gameState") or game.get("status") or game.get("state") or "Status unknown"
+        start_time = game.get("startDate") or game.get("startTime") or game.get("start_time") or game.get("date") or ""
+        if start_time and "T" in start_time:
+            start_time = start_time.split("T", 1)[0]
+        if start_time:
+            matches.append(f"{away_name} vs {home_name} — {status} ({start_time})")
+        else:
+            matches.append(f"{away_name} vs {home_name} — {status}")
+
+    if not matches:
+        return "I couldn’t find any NCAA game data right now."
+
+    summary_text = "NCAA game info:\n" + "\n".join(matches[:5])
+    if "Away team vs Home team" in summary_text or ("away team" in summary_text.lower() and "home team" in summary_text.lower()):
+        return "I couldn’t find any NCAA game data right now."
+    return safe_discord_text(summary_text, 1800)
+
+
 def extract_next_usf_game(payload):
     """Return the next USF NCAA game when one exists, otherwise fall back to the latest USF result."""
     if not payload:
@@ -403,7 +478,7 @@ def get_supported_ncaa_sport_slugs() -> list[str]:
 
 
 def fetch_ncaa_sport_summary(sport_slug: str, division: str = "fbs") -> str:
-    """Try a few NCAA scoreboard and schedule routes for a sport."""
+    """Try a few NCAA scoreboard and schedule routes for a sport, with a generic fallback when USF is not in the active feed."""
     year = datetime.now().year
     path_variants = []
 
@@ -415,23 +490,39 @@ def fetch_ncaa_sport_summary(sport_slug: str, division: str = "fbs") -> str:
             f"/schedule/{sport_slug}/{division}/{year}",
         ]
     elif sport_slug in {"basketball-men", "basketball-women", "baseball", "softball", "soccer-men", "soccer-women", "volleyball", "volleyball-women"}:
-        path_variants = [
-            f"/scoreboard/{sport_slug}/{division}/{year}/all-conf",
-            f"/schedule/{sport_slug}/{division}/{year}",
-            f"/scoreboard/{sport_slug}/{division}/{year}/1/all-conf",
-        ]
+        sport_candidates = [sport_slug]
+        if sport_slug == "volleyball":
+            sport_candidates.extend(["volleyball-women", "volleyball-men"])
+        path_variants = []
+        for candidate in sport_candidates:
+            path_variants.extend([
+                f"/scoreboard/{candidate}/{division}/{year}/all-conf",
+                f"/scoreboard/{candidate}/{division}/{year}/1/all-conf",
+                f"/schedule/{candidate}/{division}/{year}",
+            ])
     else:
         path_variants = [
             f"/scoreboard/{sport_slug}/{division}/{year}/all-conf",
             f"/schedule/{sport_slug}/{division}/{year}",
         ]
 
+    seen = set()
     for path in path_variants:
+        if path in seen:
+            continue
+        seen.add(path)
         try:
             payload = fetch_ncaa_json(path)
-            summary = extract_ncaa_game_summary(payload)
-            if "I couldn’t find any USF-related NCAA game data right now." not in summary and "Away team vs Home team" not in summary and "away team" not in summary.lower():
-                return summary
+            if not payload:
+                continue
+
+            usf_summary = extract_ncaa_game_summary(payload)
+            if "I couldn’t find any USF-related NCAA game data right now." not in usf_summary and "Away team vs Home team" not in usf_summary and "away team" not in usf_summary.lower():
+                return usf_summary
+
+            generic_summary = extract_any_ncaa_game_summary(payload)
+            if "I couldn’t find any NCAA game data right now." not in generic_summary and "Away team vs Home team" not in generic_summary and "away team" not in generic_summary.lower():
+                return generic_summary
         except Exception:
             continue
 
