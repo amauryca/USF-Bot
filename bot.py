@@ -109,7 +109,7 @@ def build_context_prompt(question: str, extra_context: str = "", max_context_cha
 
 
 def summarize_search_results(query: str, context: str) -> str:
-    """Turn SearxNG results into a concise USF answer without depending on Groq or Gemini."""
+    """Turn SearxNG results into a readable USF answer without relying on Groq or Gemini."""
     lines = [line.strip() for line in str(context or "").splitlines() if line.strip()]
     top = []
     seen = set()
@@ -120,10 +120,17 @@ def summarize_search_results(query: str, context: str) -> str:
         seen.add(clean)
         top.append(clean)
 
-    joined = "\n".join(top) if top else "No live results were found for that query." 
+    if not top:
+        return (
+            f"**USF search for: {query}**\n\n"
+            "I could not find any current live results for that topic right now. "
+            "Check the official USF athletics or university pages for final confirmation."
+        )
+
+    joined = "\n• ".join(top)
     return (
-        f"Here’s the latest USF-related info I found for '{query}':\n\n"
-        f"{joined}\n\n"
+        f"**USF search: {query}**\n\n"
+        f"• {joined}\n\n"
         "Use the official USF athletics or university pages for final confirmation."
     )
 
@@ -232,10 +239,17 @@ def extract_ncaa_game_summary(payload):
         start_time = game.get("startDate") or game.get("startTime") or game.get("start_time") or game.get("date") or ""
         if start_time and "T" in start_time:
             start_time = start_time.split("T", 1)[0]
+
+        away_score = game.get("awayScore") or game.get("away_score")
+        home_score = game.get("homeScore") or game.get("home_score")
+        score_text = ""
+        if away_score is not None and home_score is not None:
+            score_text = f" — {away_name} {away_score}, {home_name} {home_score}"
+
         if start_time:
-            usf_matches.append(f"{away_name} vs {home_name} — {status} ({start_time})")
+            usf_matches.append(f"{away_name} vs {home_name}{score_text} — {status} ({start_time})")
         else:
-            usf_matches.append(f"{away_name} vs {home_name} — {status}")
+            usf_matches.append(f"{away_name} vs {home_name}{score_text} — {status}")
 
     if not usf_matches:
         return "I couldn’t find any USF-related NCAA game data right now."
@@ -307,10 +321,17 @@ def extract_any_ncaa_game_summary(payload):
         start_time = game.get("startDate") or game.get("startTime") or game.get("start_time") or game.get("date") or ""
         if start_time and "T" in start_time:
             start_time = start_time.split("T", 1)[0]
+
+        away_score = game.get("awayScore") or game.get("away_score")
+        home_score = game.get("homeScore") or game.get("home_score")
+        score_text = ""
+        if away_score is not None and home_score is not None:
+            score_text = f" — {away_name} {away_score}, {home_name} {home_score}"
+
         if start_time:
-            matches.append(f"{away_name} vs {home_name} — {status} ({start_time})")
+            matches.append(f"{away_name} vs {home_name}{score_text} — {status} ({start_time})")
         else:
-            matches.append(f"{away_name} vs {home_name} — {status}")
+            matches.append(f"{away_name} vs {home_name}{score_text} — {status}")
 
     if not matches:
         return "I couldn’t find any NCAA game data right now."

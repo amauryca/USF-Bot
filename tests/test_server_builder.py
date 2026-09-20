@@ -78,6 +78,29 @@ def test_summarize_search_results_uses_searxng_snippets():
     assert "USF" in answer
     assert "football" in answer.lower()
     assert "Delaware State" in answer
+    assert "•" in answer
+
+
+def test_extract_ncaa_game_summary_includes_score_when_available():
+    payload = {
+        "games": [
+            {
+                "homeTeam": {"name": "USF Bulls"},
+                "awayTeam": {"name": "UCF Knights"},
+                "status": "Final",
+                "startTime": "2026-09-26T18:00:00Z",
+                "homeScore": 27,
+                "awayScore": 24,
+            }
+        ]
+    }
+
+    summary = bot.extract_ncaa_game_summary(payload)
+
+    assert "27" in summary
+    assert "24" in summary
+    assert "USF Bulls" in summary
+    assert "UCF Knights" in summary
 
 
 def test_build_usf_context_prompt_is_usf_first_and_positive():
