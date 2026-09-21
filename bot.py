@@ -164,6 +164,7 @@ NCAA_API_BASE = "https://ncaa-api.henrygd.me"
 SEARXNG_URL = os.getenv("SEARXNG_URL", "").rstrip("/")
 SEARXNG_CLIENT_IP = os.getenv("SEARXNG_CLIENT_IP", "8.8.8.8")
 NICKNAME_CHANNEL_ID = 1551719938786332772
+NICKNAME_ROLE_ID = 1551719693314826241
 
 
 def build_game_embed(title: str, away_team: str, home_team: str, status: str, date_text: str, away_score=None, home_score=None, description: str = "") -> discord.Embed:
@@ -1006,9 +1007,19 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
+def is_staff_member(member: discord.Member) -> bool:
+    """Return whether a member is an administrator or has the staff role."""
+    if member.guild_permissions.administrator:
+        return True
+    return discord.utils.get(member.roles, name="staff") is not None
+
+
 async def nickname_channel_check(interaction: discord.Interaction) -> bool:
     """Allow only /nick in the nickname-only channel."""
     if interaction.channel_id != NICKNAME_CHANNEL_ID:
+        return True
+
+    if isinstance(interaction.user, discord.Member) and is_staff_member(interaction.user):
         return True
 
     command = getattr(interaction, "command", None)
@@ -1247,9 +1258,19 @@ async def nick(ctx: commands.Context, nickname: str):
 
     try:
         await ctx.author.edit(nick=nickname)
-        await ctx.send(f"✅ Your nickname is now **{discord.utils.escape_markdown(nickname)}**.")
+        role = ctx.guild.get_role(NICKNAME_ROLE_ID)
+        if role is None:
+            await ctx.send(
+                f"✅ Your nickname is now **{discord.utils.escape_markdown(nickname)}**, but I couldn't find the configured role."
+            )
+            return
+
+        await ctx.author.add_roles(role, reason="Completed /nick")
+        await ctx.send(
+            f"✅ Your nickname is now **{discord.utils.escape_markdown(nickname)}** and you received {role.mention}."
+        )
     except discord.Forbidden:
-        await ctx.send("🚫 I don't have permission to change your nickname.")
+        await ctx.send("🚫 I don't have permission to change your nickname or assign the configured role.")
     except Exception:
         await ctx.send("⚠️ I couldn't change your nickname right now.")
 
@@ -1737,6 +1758,8 @@ async def on_message(message: discord.Message):
 
     if message.channel.id == NICKNAME_CHANNEL_ID:
         own_bot_id = bot.user.id if bot.user else None
+        if isinstance(message.author, discord.Member) and is_staff_member(message.author):
+            return
         if message.author.id != own_bot_id:
             try:
                 await message.delete()
