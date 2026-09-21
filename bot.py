@@ -202,6 +202,17 @@ def safe_discord_text(text: str, max_chars: int = 3800) -> str:
     return cleaned[: max_chars - 3].rstrip() + "..."
 
 
+def build_ai_answer_embed(title: str, query: str, answer: str, sources: list[str] = None) -> discord.Embed:
+    """Create a Discord embed for AI-generated USF answers, including source links when available."""
+    embed = discord.Embed(title=safe_discord_text(title, 250), description=safe_discord_text(answer, 4000), color=discord.Color.gold())
+    if query:
+        embed.add_field(name="Question", value=safe_discord_text(query, 250), inline=False)
+    if sources:
+        joined = "\n".join(sources[:5])
+        embed.add_field(name="Sources", value=safe_discord_text(joined, 1000), inline=False)
+    return embed
+
+
 def is_usf_team_name(name: str) -> bool:
     """Recognize likely USF team names in NCAA payloads."""
     if not name:
@@ -629,8 +640,8 @@ def fetch_ncaa_sport_summary(sport_slug: str, division: str = "fbs") -> str:
     return "I couldn’t find any NCAA game data right now."
 
 
-def _fetch_searxng_snippets(query: str, max_results: int = 5) -> list[str]:
-    """Query a local SearxNG instance if configured, returning a compact, deduped snippet list."""
+def _fetch_searxng_results(query: str, max_results: int = 5) -> list[dict]:
+    """Query a local SearxNG instance if configured, returning result dicts with title, snippet, and url."""
     if not SEARXNG_URL:
         return []
 
@@ -663,16 +674,37 @@ def _fetch_searxng_snippets(query: str, max_results: int = 5) -> list[str]:
             payload = json.loads(response.read().decode("utf-8", "ignore"))
 
         results = payload.get("results") or []
-        snippets = []
-        for item in results[:max_results]:
+        cleaned = []
+        seen = set()
+        for item in results:
             title = str(item.get("title") or "").strip()
             snippet = str(item.get("content") or item.get("snippet") or "").strip()
-            if title or snippet:
-                combined = f"{title} — {snippet}".strip(" — ")
-                snippets.append(combined)
-        return normalize_search_snippets(snippets, max_items=max_results, max_chars=220)
+            url = str(item.get("url") or "").strip()
+            if not title and not snippet:
+                continue
+
+            key = f"{title.lower()}|{snippet.lower()}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            if len(snippet) > 220:
+                snippet = snippet[:217].rstrip(" .;:,") + "..."
+
+            cleaned.append({"title": title, "snippet": snippet, "url": url})
+            if len(cleaned) >= max_results:
+                break
+
+        return cleaned
     except Exception:
         return []
+
+
+def _fetch_searxng_snippets(query: str, max_results: int = 5) -> list[str]:
+    """Query a local SearxNG instance if configured, returning a compact, deduped snippet list."""
+    results = _fetch_searxng_results(query, max_results)
+    snippets = [f"{r['title']} — {r['snippet']}".strip(" — ") for r in results if r["title"] or r["snippet"]]
+    return normalize_search_snippets(snippets, max_items=max_results, max_chars=220)
 
 
 def fetch_search_snippets(query: str, max_results: int = 5) -> str:
@@ -689,7 +721,28 @@ def fetch_search_snippets(query: str, max_results: int = 5) -> str:
     return "No live web snippets were available for this query. Use official USF sources for final verification."
 
 
-def _fetch_duckduckgo_snippets(query: str, max_results: int = 5) -> list[str]:
+def fetch_search_results_with_links(query: str, max_results: int = 5) -> tuple[str, list[str]]:
+    """Combine SearxNG (or DuckDuckGo fallback) titles, snippets, and links into AI-ready context plus a link list."""
+    results = _fetch_searxng_results(query, max_results)
+    if not results:
+        results = _fetch_duckduckgo_results(query, max_results)
+
+    if not results:
+        return "", []
+
+    context_lines = []
+    links = []
+    for result in results:
+        line = f"- {result['title']}: {result['snippet']}".strip(": -")
+        if result["url"]:
+            line += f" (Source: {result['url']})"
+            links.append(result["url"])
+        context_lines.append(line)
+
+    return "\n".join(context_lines), links
+
+
+def _fetch_duckduckgo_results(query: str, max_results: int = 5) -> list[dict]:
     """Fallback search provider used when SearxNG is unavailable or not configured."""
     try:
         search_url = "https://duckduckgo.com/html/?q=" + quote(query)
@@ -698,20 +751,30 @@ def _fetch_duckduckgo_snippets(query: str, max_results: int = 5) -> list[str]:
             html = response.read().decode("utf-8", "ignore")
 
         matches = re.findall(
-            r'<a rel="nofollow" class="result-link"[^>]*>(.*?)</a>.*?<a class="result-snippet"[^>]*>(.*?)</a>',
+            r'<a rel="nofollow" class="result-link"([^>]*)>(.*?)</a>.*?<a class="result-snippet"[^>]*>(.*?)</a>',
             html,
             re.S | re.I,
         )
-        snippets = []
-        for title, snippet in matches[:max_results]:
+        cleaned = []
+        for attrs, title, snippet in matches[:max_results]:
             clean_title = re.sub(r"<.*?>", "", title).strip()
             clean_snippet = re.sub(r"<.*?>", "", snippet).strip()
+            href_match = re.search(r'href="([^"]*)"', attrs)
+            url = href_match.group(1).strip() if href_match else ""
             if clean_title or clean_snippet:
-                combined = f"{clean_title} — {clean_snippet}"
-                snippets.append(combined)
-        return normalize_search_snippets(snippets, max_items=max_results, max_chars=220)
+                if len(clean_snippet) > 220:
+                    clean_snippet = clean_snippet[:217].rstrip(" .;:,") + "..."
+                cleaned.append({"title": clean_title, "snippet": clean_snippet, "url": url})
+        return cleaned
     except Exception:
         return []
+
+
+def _fetch_duckduckgo_snippets(query: str, max_results: int = 5) -> list[str]:
+    """Fallback search provider used when SearxNG is unavailable or not configured."""
+    results = _fetch_duckduckgo_results(query, max_results)
+    snippets = [f"{r['title']} — {r['snippet']}".strip(" — ") for r in results if r["title"] or r["snippet"]]
+    return normalize_search_snippets(snippets, max_items=max_results, max_chars=220)
 
 
 SLUR_PATTERNS = [
@@ -865,6 +928,27 @@ def format_ai_error_message(exc: Exception) -> str:
     if is_prompt_too_large_error(exc):
         return "⚠️ That question is a bit too long for the model. Try a shorter version and I’ll answer it."
     return f"⚠️ I couldn't answer that right now. Error: {exc}"
+
+
+async def build_ai_search_embed(title: str, query: str) -> discord.Embed:
+    """Fetch SearxNG/DuckDuckGo context, ask Groq to compose an answer, and package it with source links."""
+    context_text, links = fetch_search_results_with_links(query, max_results=5)
+    if not context_text:
+        return discord.Embed(
+            title=safe_discord_text(title, 250),
+            description="I couldn’t pull live results for that topic, but I can still help with the USF angle if you ask directly.",
+            color=discord.Color.gold(),
+        )
+
+    try:
+        answer = await ask_groq(query, context_text)
+    except Exception as exc:
+        if isinstance(exc, RuntimeError) and "Groq is not configured" in str(exc):
+            answer = summarize_search_results(query, context_text)
+        else:
+            answer = format_ai_error_message(exc)
+
+    return build_ai_answer_embed(title, query, answer, links)
 
 
 intents = discord.Intents.default()
@@ -1168,16 +1252,8 @@ async def ask(ctx: commands.Context, *, question: str):
         return
 
     try:
-        snippets = _fetch_searxng_snippets(question, max_results=5)
-        if not snippets:
-            snippets = _fetch_duckduckgo_snippets(question, max_results=5)
-        if not snippets:
-            await ctx.send("🔎 I couldn’t pull live results for that topic, but I can still help with the USF angle if you ask directly.")
-            return
-
-        web_context = "\n\n".join(snippets)
-        answer = summarize_search_results(question, web_context)
-        await ctx.send(safe_discord_text(answer, 3900))
+        embed = await build_ai_search_embed("USF Answer", question)
+        await ctx.send(embed=embed)
     except Exception:
         await ctx.send("⚠️ I couldn’t fetch current USF search results right now. Try a shorter or more specific question.")
 
@@ -1189,32 +1265,17 @@ async def search(ctx: commands.Context, *, query: str):
         return
 
     try:
-        snippets = _fetch_searxng_snippets(query, max_results=5)
-        if not snippets:
-            snippets = _fetch_duckduckgo_snippets(query, max_results=5)
-        if not snippets:
-            await ctx.send("🔎 I couldn’t pull live results for that topic, but I can still help with the USF angle if you ask directly.")
-            return
-
-        web_context = "\n\n".join(snippets)
-        answer = summarize_search_results(query, web_context)
-        await ctx.send(safe_discord_text(answer, 3900))
+        embed = await build_ai_search_embed("USF Search Results", query)
+        await ctx.send(embed=embed)
     except Exception:
         await ctx.send("⚠️ I couldn’t fetch current USF search results right now. Try a shorter or more specific question.")
 
 
 async def send_usf_topic_answer(ctx: commands.Context, topic: str):
-    """Answer a preset USF topic using a compact live SearxNG snippet set only."""
+    """Answer a preset USF topic by combining live SearxNG context with a Groq-generated answer embed."""
     try:
-        snippets = _fetch_searxng_snippets(f"USF {topic}", max_results=5)
-        if not snippets:
-            snippets = _fetch_duckduckgo_snippets(f"USF {topic}", max_results=5)
-        if not snippets:
-            await ctx.send("🔎 I couldn’t pull live results for that USF topic right now, but official USF pages are the best final source.")
-            return
-
-        answer = summarize_search_results(f"USF {topic}", "\n\n".join(snippets))
-        await ctx.send(safe_discord_text(answer, 3900))
+        embed = await build_ai_search_embed(f"USF {topic}", f"USF {topic}")
+        await ctx.send(embed=embed)
     except Exception:
         await ctx.send("⚠️ I couldn’t fetch the live USF results right now. Try a more specific question.")
 
