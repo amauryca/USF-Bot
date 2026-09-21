@@ -1736,7 +1736,8 @@ async def on_message(message: discord.Message):
         return
 
     if message.channel.id == NICKNAME_CHANNEL_ID:
-        if not message.author.bot:
+        own_bot_id = bot.user.id if bot.user else None
+        if message.author.id != own_bot_id:
             try:
                 await message.delete()
             except Exception:
