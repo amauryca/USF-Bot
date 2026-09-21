@@ -163,6 +163,7 @@ def summarize_search_results(query: str, context: str) -> str:
 NCAA_API_BASE = "https://ncaa-api.henrygd.me"
 SEARXNG_URL = os.getenv("SEARXNG_URL", "").rstrip("/")
 SEARXNG_CLIENT_IP = os.getenv("SEARXNG_CLIENT_IP", "8.8.8.8")
+NICKNAME_CHANNEL_ID = 1551719938786332772
 
 
 def build_game_embed(title: str, away_team: str, home_team: str, status: str, date_text: str, away_score=None, home_score=None, description: str = "") -> discord.Embed:
@@ -1005,6 +1006,26 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
+async def nickname_channel_check(interaction: discord.Interaction) -> bool:
+    """Allow only /nick in the nickname-only channel."""
+    if interaction.channel_id != NICKNAME_CHANNEL_ID:
+        return True
+
+    command = getattr(interaction, "command", None)
+    if command and command.name == "nick":
+        return True
+
+    if not interaction.response.is_done():
+        await interaction.response.send_message(
+            "Only `/nick` can be used in this channel.",
+            ephemeral=True,
+        )
+    return False
+
+
+bot.tree.interaction_check = nickname_channel_check
+
+
 def staff_only():
     async def predicate(ctx: commands.Context):
         if ctx.guild is None:
@@ -1033,6 +1054,7 @@ def build_command_pages() -> list[str]:
             "`/commands` - Show this menu\n"
             "`/ask <question>` - Ask a USF question\n"
             "`/search <query>` - Search current USF info\n"
+            "`/nick <nickname>` - Change your server nickname\n"
             "`/today` - What's happening at USF today\n"
             "`/nextgame` - Next USF NCAA game\n"
             "`/football` - USF football updates\n"
@@ -1214,6 +1236,22 @@ async def channelinfo(ctx: commands.Context):
         f"Category: {channel.category.name if channel.category else 'None'}\n"
         f"Created: {channel.created_at.strftime('%Y-%m-%d')}"
     )
+
+
+@bot.hybrid_command(name="nick", description="Change your server nickname")
+async def nick(ctx: commands.Context, nickname: str):
+    """Change the invoking member's nickname."""
+    if len(nickname) > 32:
+        await ctx.send("⚠️ Nicknames must be 32 characters or fewer.")
+        return
+
+    try:
+        await ctx.author.edit(nick=nickname)
+        await ctx.send(f"✅ Your nickname is now **{discord.utils.escape_markdown(nickname)}**.")
+    except discord.Forbidden:
+        await ctx.send("🚫 I don't have permission to change your nickname.")
+    except Exception:
+        await ctx.send("⚠️ I couldn't change your nickname right now.")
 
 
 @bot.hybrid_command(name="invite", description="Create a server invite link")
@@ -1694,7 +1732,18 @@ async def sources(ctx: commands.Context, *, topic: str):
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
+    if not message.guild:
+        return
+
+    if message.channel.id == NICKNAME_CHANNEL_ID:
+        if not message.author.bot:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+        return
+
+    if message.author.bot:
         return
 
     if contains_slur(message.content):
