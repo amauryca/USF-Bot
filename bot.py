@@ -1358,6 +1358,7 @@ async def ask(ctx: commands.Context, *, question: str):
         await ctx.send("❓ Ask me a USF question like: `/ask When is the next USF football game?`")
         return
 
+    await ctx.defer()
     try:
         embed = await build_ai_search_embed("USF Answer", question)
         await ctx.send(embed=embed)
@@ -1371,6 +1372,7 @@ async def search(ctx: commands.Context, *, query: str):
         await ctx.send("🔎 Use `/search <topic>` to look up current USF-related information.")
         return
 
+    await ctx.defer()
     try:
         embed = await build_ai_search_embed("USF Search Results", query)
         await ctx.send(embed=embed)
@@ -1380,6 +1382,7 @@ async def search(ctx: commands.Context, *, query: str):
 
 async def send_usf_topic_answer(ctx: commands.Context, topic: str):
     """Answer a preset USF topic by combining live SearxNG context with a Groq-generated answer embed."""
+    await ctx.defer()
     try:
         embed = await build_ai_search_embed(f"USF {topic}", f"USF {topic}")
         await ctx.send(embed=embed)
@@ -1395,6 +1398,7 @@ async def today(ctx: commands.Context):
 @bot.hybrid_command(name="nextgame", description="Show the next USF NCAA game")
 async def nextgame(ctx: commands.Context):
     """Show the next upcoming NCAA game, preferring USF when available."""
+    await ctx.defer()
     try:
         current_year = datetime.now().year
         payloads = []
@@ -1458,6 +1462,7 @@ async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division
     while preferring the newer embed-first output.
     """
     display_label = label or fallback_topic or sport_slug
+    await ctx.defer()
     try:
         current_year = datetime.now().year
         payloads = []
