@@ -1046,6 +1046,7 @@ def build_command_pages() -> list[str]:
         (
             "**Staff & Server Tools**\n"
             "`/create_channel <name>` - Create a text channel\n"
+            "`/invite [channel] [max_uses] [max_age_hours] [temporary]` - Create a server invite link\n"
             "`/lockdown` - Lock current channel to staff only\n"
             "`/clear <amount>` - Delete recent messages\n"
             "`/timeout @user <minutes> [reason]` - Time out a member\n"
@@ -1213,6 +1214,41 @@ async def channelinfo(ctx: commands.Context):
         f"Category: {channel.category.name if channel.category else 'None'}\n"
         f"Created: {channel.created_at.strftime('%Y-%m-%d')}"
     )
+
+
+@bot.hybrid_command(name="invite", description="Create a server invite link")
+@commands.has_permissions(create_instant_invite=True)
+@commands.bot_has_permissions(create_instant_invite=True)
+async def create_invite(ctx: commands.Context, channel: discord.TextChannel = None, max_uses: int = 0, max_age_hours: int = 24, temporary: bool = False):
+    """Create an invite link for this server, defaulting to a 24-hour expiry and unlimited uses."""
+    target_channel = channel or ctx.channel
+
+    # Discord caps invite max_age at 7 days (0 means never expires) and max_uses at 100 (0 means unlimited).
+    max_age_seconds = min(max(max_age_hours, 0), 168) * 3600
+    capped_max_uses = min(max(max_uses, 0), 100)
+
+    try:
+        invite = await target_channel.create_invite(
+            max_age=max_age_seconds,
+            max_uses=capped_max_uses,
+            temporary=temporary,
+            reason=f"Requested by {ctx.author}",
+        )
+    except discord.Forbidden:
+        await ctx.send("🚫 I don't have permission to create an invite for that channel.")
+        return
+    except Exception:
+        await ctx.send("⚠️ I couldn't create an invite right now. Try again later.")
+        return
+
+    expiry_text = "Never expires" if max_age_seconds == 0 else f"Expires in {max_age_seconds // 3600} hour(s)"
+    uses_text = "Unlimited uses" if capped_max_uses == 0 else f"Max {capped_max_uses} use(s)"
+
+    embed = discord.Embed(title="📨 Server Invite Created", description=invite.url, color=discord.Color.gold())
+    embed.add_field(name="Channel", value=target_channel.mention, inline=True)
+    embed.add_field(name="Expiry", value=expiry_text, inline=True)
+    embed.add_field(name="Uses", value=uses_text, inline=True)
+    await ctx.send(embed=embed)
 
 
 @bot.hybrid_command(name="create_channel", description="Create a new text channel")
