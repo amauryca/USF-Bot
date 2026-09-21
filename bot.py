@@ -1252,27 +1252,33 @@ async def channelinfo(ctx: commands.Context):
 @bot.hybrid_command(name="nick", description="Change your server nickname")
 async def nick(ctx: commands.Context, nickname: str):
     """Change the invoking member's nickname."""
+    async def send_feedback(content: str):
+        if ctx.interaction is not None:
+            await ctx.send(content, ephemeral=True)
+        else:
+            await ctx.send(content)
+
     if len(nickname) > 32:
-        await ctx.send("⚠️ Nicknames must be 32 characters or fewer.")
+        await send_feedback("⚠️ Nicknames must be 32 characters or fewer.")
         return
 
     try:
         await ctx.author.edit(nick=nickname)
         role = ctx.guild.get_role(NICKNAME_ROLE_ID)
         if role is None:
-            await ctx.send(
+            await send_feedback(
                 f"✅ Your nickname is now **{discord.utils.escape_markdown(nickname)}**, but I couldn't find the configured role."
             )
             return
 
         await ctx.author.add_roles(role, reason="Completed /nick")
-        await ctx.send(
+        await send_feedback(
             f"✅ Your nickname is now **{discord.utils.escape_markdown(nickname)}** and you received {role.mention}."
         )
     except discord.Forbidden:
-        await ctx.send("🚫 I don't have permission to change your nickname or assign the configured role.")
+        await send_feedback("🚫 I don't have permission to change your nickname or assign the configured role.")
     except Exception:
-        await ctx.send("⚠️ I couldn't change your nickname right now.")
+        await send_feedback("⚠️ I couldn't change your nickname right now.")
 
 
 @bot.hybrid_command(name="invite", description="Create a server invite link")
