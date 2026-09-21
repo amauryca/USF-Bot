@@ -81,6 +81,17 @@ def test_summarize_search_results_uses_searxng_snippets():
     assert "•" in answer
 
 
+def test_normalize_search_snippets_deduplicates_and_trims():
+    text = "USF Bulls football update and campus news " * 20
+    snippets = [text, text, "USF athletics page — official schedule and team updates"]
+
+    cleaned = bot.normalize_search_snippets(snippets, max_items=2, max_chars=80)
+
+    assert len(cleaned) <= 2
+    assert all(len(item) <= 80 for item in cleaned)
+    assert len(set(cleaned)) == len(cleaned)
+
+
 def test_extract_ncaa_game_summary_includes_score_when_available():
     payload = {
         "games": [

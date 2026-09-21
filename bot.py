@@ -108,6 +108,31 @@ def build_context_prompt(question: str, extra_context: str = "", max_context_cha
     return prompt
 
 
+def normalize_search_snippets(snippets: list[str], max_items: int = 5, max_chars: int = 220) -> list[str]:
+    """Keep only the highest-value snippets, removing duplicates and trimming hard for model input."""
+    cleaned = []
+    seen = set()
+
+    for snippet in snippets or []:
+        text = " ".join(str(snippet or "").split())
+        if not text:
+            continue
+
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if len(text) > max_chars:
+            text = text[: max_chars - 3].rstrip(" .;:,") + "..."
+
+        cleaned.append(text)
+        if len(cleaned) >= max_items:
+            break
+
+    return cleaned
+
+
 def summarize_search_results(query: str, context: str) -> str:
     """Turn SearxNG results into a readable USF answer without relying on Groq or Gemini."""
     lines = [line.strip() for line in str(context or "").splitlines() if line.strip()]
@@ -589,8 +614,8 @@ def fetch_ncaa_sport_summary(sport_slug: str, division: str = "fbs") -> str:
     return "I couldn’t find any NCAA game data right now."
 
 
-def _fetch_searxng_snippets(query: str, max_results: int = 2) -> list[str]:
-    """Query a local SearxNG instance if configured, returning a list of search result snippets."""
+def _fetch_searxng_snippets(query: str, max_results: int = 5) -> list[str]:
+    """Query a local SearxNG instance if configured, returning a compact, deduped snippet list."""
     if not SEARXNG_URL:
         return []
 
@@ -629,13 +654,13 @@ def _fetch_searxng_snippets(query: str, max_results: int = 2) -> list[str]:
             snippet = str(item.get("content") or item.get("snippet") or "").strip()
             if title or snippet:
                 combined = f"{title} — {snippet}".strip(" — ")
-                snippets.append(trim_text_for_model(combined, 280))
-        return snippets
+                snippets.append(combined)
+        return normalize_search_snippets(snippets, max_items=max_results, max_chars=220)
     except Exception:
         return []
 
 
-def fetch_search_snippets(query: str, max_results: int = 2) -> str:
+def fetch_search_snippets(query: str, max_results: int = 5) -> str:
     """Try SearxNG first, then fall back to DuckDuckGo for current USF information."""
     loaders = [
         _fetch_searxng_snippets,
@@ -649,7 +674,7 @@ def fetch_search_snippets(query: str, max_results: int = 2) -> str:
     return "No live web snippets were available for this query. Use official USF sources for final verification."
 
 
-def _fetch_duckduckgo_snippets(query: str, max_results: int = 2) -> list[str]:
+def _fetch_duckduckgo_snippets(query: str, max_results: int = 5) -> list[str]:
     """Fallback search provider used when SearxNG is unavailable or not configured."""
     try:
         search_url = "https://duckduckgo.com/html/?q=" + quote(query)
@@ -668,8 +693,8 @@ def _fetch_duckduckgo_snippets(query: str, max_results: int = 2) -> list[str]:
             clean_snippet = re.sub(r"<.*?>", "", snippet).strip()
             if clean_title or clean_snippet:
                 combined = f"{clean_title} — {clean_snippet}"
-                snippets.append(trim_text_for_model(combined, 280))
-        return snippets
+                snippets.append(combined)
+        return normalize_search_snippets(snippets, max_items=max_results, max_chars=220)
     except Exception:
         return []
 
@@ -1128,13 +1153,17 @@ async def ask(ctx: commands.Context, *, question: str):
         return
 
     try:
-        snippets = fetch_search_snippets(question)
-        if not snippets or "No live web snippets" in snippets:
+        snippets = _fetch_searxng_snippets(question, max_results=5)
+        if not snippets:
+            snippets = _fetch_duckduckgo_snippets(question, max_results=5)
+        if not snippets:
             await ctx.send("🔎 I couldn’t pull live results for that topic, but I can still help with the USF angle if you ask directly.")
             return
-        answer = summarize_search_results(question, snippets)
+
+        web_context = "\n\n".join(snippets)
+        answer = summarize_search_results(question, web_context)
         await ctx.send(safe_discord_text(answer, 3900))
-    except Exception as exc:
+    except Exception:
         await ctx.send("⚠️ I couldn’t fetch current USF search results right now. Try a shorter or more specific question.")
 
 
@@ -1145,24 +1174,31 @@ async def search(ctx: commands.Context, *, query: str):
         return
 
     try:
-        snippets = fetch_search_snippets(query)
-        if not snippets or "No live web snippets" in snippets:
+        snippets = _fetch_searxng_snippets(query, max_results=5)
+        if not snippets:
+            snippets = _fetch_duckduckgo_snippets(query, max_results=5)
+        if not snippets:
             await ctx.send("🔎 I couldn’t pull live results for that topic, but I can still help with the USF angle if you ask directly.")
             return
-        answer = summarize_search_results(query, snippets)
+
+        web_context = "\n\n".join(snippets)
+        answer = summarize_search_results(query, web_context)
         await ctx.send(safe_discord_text(answer, 3900))
     except Exception:
         await ctx.send("⚠️ I couldn’t fetch current USF search results right now. Try a shorter or more specific question.")
 
 
 async def send_usf_topic_answer(ctx: commands.Context, topic: str):
-    """Answer a preset USF topic using live SearxNG snippets only."""
+    """Answer a preset USF topic using a compact live SearxNG snippet set only."""
     try:
-        snippets = fetch_search_snippets(f"USF {topic}")
-        if not snippets or "No live web snippets" in snippets:
+        snippets = _fetch_searxng_snippets(f"USF {topic}", max_results=5)
+        if not snippets:
+            snippets = _fetch_duckduckgo_snippets(f"USF {topic}", max_results=5)
+        if not snippets:
             await ctx.send("🔎 I couldn’t pull live results for that USF topic right now, but official USF pages are the best final source.")
             return
-        answer = summarize_search_results(f"USF {topic}", snippets)
+
+        answer = summarize_search_results(f"USF {topic}", "\n\n".join(snippets))
         await ctx.send(safe_discord_text(answer, 3900))
     except Exception:
         await ctx.send("⚠️ I couldn’t fetch the live USF results right now. Try a more specific question.")
