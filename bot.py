@@ -4,7 +4,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
 import discord
@@ -200,6 +200,44 @@ def safe_discord_text(text: str, max_chars: int = 3800) -> str:
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+EMBED_COLOR_NAMES = {
+    "gold": discord.Color.gold(),
+    "usf": discord.Color.gold(),
+    "green": discord.Color.green(),
+    "red": discord.Color.red(),
+    "blue": discord.Color.blue(),
+    "purple": discord.Color.purple(),
+    "orange": discord.Color.orange(),
+    "teal": discord.Color.teal(),
+    "blurple": discord.Color.blurple(),
+    "black": discord.Color.default(),
+}
+
+
+def parse_embed_color(value: str) -> discord.Color:
+    """Accept a known color name or a hex code, defaulting to USF gold."""
+    if not value:
+        return discord.Color.gold()
+
+    name = value.strip().lower()
+    if name in EMBED_COLOR_NAMES:
+        return EMBED_COLOR_NAMES[name]
+
+    hex_value = name.lstrip("#")
+    if re.fullmatch(r"[0-9a-f]{6}", hex_value):
+        return discord.Color(int(hex_value, 16))
+
+    return discord.Color.gold()
+
+
+def is_safe_embed_url(url: str) -> bool:
+    """Only allow http/https URLs for embed images to avoid unsupported or unsafe schemes."""
+    if not url:
+        return False
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def build_ai_answer_embed(title: str, query: str, answer: str, sources: list[str] = None) -> discord.Embed:
@@ -721,8 +759,8 @@ def fetch_search_snippets(query: str, max_results: int = 5) -> str:
     return "No live web snippets were available for this query. Use official USF sources for final verification."
 
 
-def fetch_search_results_with_links(query: str, max_results: int = 5) -> tuple[str, list[str]]:
-    """Combine SearxNG (or DuckDuckGo fallback) titles, snippets, and links into AI-ready context plus a link list."""
+def fetch_search_results_with_links(query: str, max_results: int = 5, max_chars: int = 1200) -> tuple[str, list[str]]:
+    """Combine SearxNG (or DuckDuckGo fallback) titles, snippets, and links into AI-ready context plus a link list, capped to max_chars per request."""
     results = _fetch_searxng_results(query, max_results)
     if not results:
         results = _fetch_duckduckgo_results(query, max_results)
@@ -732,14 +770,26 @@ def fetch_search_results_with_links(query: str, max_results: int = 5) -> tuple[s
 
     context_lines = []
     links = []
+    total_chars = 0
     for result in results:
         line = f"- {result['title']}: {result['snippet']}".strip(": -")
         if result["url"]:
             line += f" (Source: {result['url']})"
+
+        # Stop adding lines once the running total would exceed the per-request budget.
+        if total_chars + len(line) + 1 > max_chars:
+            break
+
+        if result["url"]:
             links.append(result["url"])
         context_lines.append(line)
+        total_chars += len(line) + 1
 
-    return "\n".join(context_lines), links
+    joined = "\n".join(context_lines)
+    if len(joined) > max_chars:
+        joined = joined[: max_chars - 3].rstrip() + "..."
+
+    return joined, links
 
 
 def _fetch_duckduckgo_results(query: str, max_results: int = 5) -> list[dict]:
@@ -867,7 +917,7 @@ async def ask_groq(question: str, extra_context: str = "") -> str:
             {"role": "user", "content": question},
         ],
         temperature=0.7,
-        max_tokens=500,
+        max_completion_tokens=500,
     )
 
     return response.choices[0].message.content.strip()
@@ -900,21 +950,20 @@ def is_prompt_too_large_error(exc: Exception | str) -> bool:
         "413",
         "prompt too long",
         "prompt too large",
-        "max input",
         "must be 4000 or fewer in length",
         "must be 20000 or fewer in length",
         "input too large",
         "context too large",
         "context length exceeded",
+        "context_length_exceeded",
         "too many tokens",
-        "token limit",
-        "maximum context",
-        "max_tokens",
+        "reduce the length of the messages",
+        "maximum context length",
     )
     if any(token in message for token in actual_limit_tokens):
         return True
 
-    if "too long" in message and any(marker in message for marker in ("prompt", "input", "context", "token", "request", "max")):
+    if "too long" in message and any(marker in message for marker in ("prompt", "context length", "token limit", "request")):
         return True
 
     return False
@@ -979,31 +1028,32 @@ def build_command_pages() -> list[str]:
         (
             "**USF Bot Command Guide**\n\n"
             "**General**\n"
-            "`!ping` - Check bot availability\n"
-            "`!status` - Show bot status\n"
-            "`!commands` - Show this menu\n"
-            "`!ask <question>` - Ask a USF question\n"
-            "`!search <query>` - Search current USF info\n"
-            "`!today` - What's happening at USF today\n"
-            "`!nextgame` - Next USF NCAA game\n"
-            "`!football` - USF football updates\n"
-            "`!basketball` - USF basketball updates\n"
-            "`!baseball` - USF baseball updates\n"
-            "`!softball` - USF softball updates\n"
-            "`!soccer` - USF soccer updates\n"
-            "`!volleyball` - USF volleyball updates\n"
+            "`/ping` - Check bot availability\n"
+            "`/status` - Show bot status\n"
+            "`/commands` - Show this menu\n"
+            "`/ask <question>` - Ask a USF question\n"
+            "`/search <query>` - Search current USF info\n"
+            "`/today` - What's happening at USF today\n"
+            "`/nextgame` - Next USF NCAA game\n"
+            "`/football` - USF football updates\n"
+            "`/basketball` - USF basketball updates\n"
+            "`/baseball` - USF baseball updates\n"
+            "`/softball` - USF softball updates\n"
+            "`/soccer` - USF soccer updates\n"
+            "`/volleyball` - USF volleyball updates\n"
         ),
         (
             "**Staff & Server Tools**\n"
-            "`!create_channel <name>` - Create a text channel\n"
-            "`!lockdown` - Lock current channel to staff only\n"
-            "`!clear <amount>` - Delete recent messages\n"
-            "`!timeout @user <minutes> [reason]` - Time out a member\n"
-            "`!untimeout @user` - Remove a timeout\n"
-            "`!kick @user <reason>` - Kick a member\n"
-            "`!ban @user <reason>` - Ban a member\n"
-            "`!warn @user <reason>` - Warn a member\n"
-            "`!report @user <reason>` - Submit a moderation report\n"
+            "`/create_channel <name>` - Create a text channel\n"
+            "`/lockdown` - Lock current channel to staff only\n"
+            "`/clear <amount>` - Delete recent messages\n"
+            "`/timeout @user <minutes> [reason]` - Time out a member\n"
+            "`/untimeout @user` - Remove a timeout\n"
+            "`/kick @user <reason>` - Kick a member\n"
+            "`/ban @user <reason>` - Ban a member\n"
+            "`/warn @user <reason>` - Warn a member\n"
+            "`/report @user <reason>` - Submit a moderation report\n"
+            "`/embed title: ... description: ...` - Build and post a custom embed\n"
         ),
     ]
 
@@ -1067,23 +1117,35 @@ async def on_ready():
     print(f"Logged in as {bot.user.name} ({bot.user.id})")
     await bot.change_presence(activity=discord.Game(name="Hello, I'm the USF Bot! Go Bulls 🤘"))
 
+    try:
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            guild = discord.Object(id=int(guild_id))
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+        else:
+            synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} application command(s).")
+    except Exception as exc:
+        print(f"Failed to sync application commands: {exc}")
 
-@bot.command()
+
+@bot.hybrid_command(name="ping", description="Check bot availability")
 async def ping(ctx: commands.Context):
     await ctx.send("Pong! 🏓 I am online and ready to help.")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="hello", description="Say hello to the USF Bot", hidden=True)
 async def hello(ctx: commands.Context):
     await ctx.send("Hello! I’m the USF Bot! Go Bulls 🤘 This bot is built for USF news, schedules, and server help.")
 
 
-@bot.command()
+@bot.hybrid_command(name="status", description="Show bot status")
 async def status(ctx: commands.Context):
     await ctx.send("Hello, I’m the USF Bot! Go Bulls 🤘\nI can help with USF info, server tools, and moderation.")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="about", description="Learn what the USF Bot does", hidden=True)
 async def about(ctx: commands.Context):
     await ctx.send(
         "**USF Bot**\n"
@@ -1092,7 +1154,7 @@ async def about(ctx: commands.Context):
     )
 
 
-@bot.command(name="commands")
+@bot.hybrid_command(name="commands", description="Show the command guide")
 async def list_commands(ctx: commands.Context, page: int = 1):
     pages = build_command_pages()
     if not pages:
@@ -1108,7 +1170,7 @@ async def list_commands(ctx: commands.Context, page: int = 1):
         await ctx.send(message_content, view=view)
 
 
-@bot.command(name="serverinfo", hidden=True)
+@bot.hybrid_command(name="serverinfo", description="Show server information", hidden=True)
 async def serverinfo(ctx: commands.Context):
     guild = ctx.guild
     member_count = guild.member_count
@@ -1125,7 +1187,7 @@ async def serverinfo(ctx: commands.Context):
     )
 
 
-@bot.command(name="userinfo", hidden=True)
+@bot.hybrid_command(name="userinfo", description="Show info about a member", hidden=True)
 async def userinfo(ctx: commands.Context, member: discord.Member = None):
     target = member or ctx.author
     roles = " ".join(role.mention for role in target.roles[1:]) or "No extra roles"
@@ -1140,7 +1202,7 @@ async def userinfo(ctx: commands.Context, member: discord.Member = None):
     )
 
 
-@bot.command(name="channelinfo", hidden=True)
+@bot.hybrid_command(name="channelinfo", description="Show info about the current channel", hidden=True)
 async def channelinfo(ctx: commands.Context):
     channel = ctx.channel
     await ctx.send(
@@ -1152,12 +1214,12 @@ async def channelinfo(ctx: commands.Context):
     )
 
 
-@bot.command(name="create_channel")
+@bot.hybrid_command(name="create_channel", description="Create a new text channel")
 @staff_only()
 @commands.has_permissions(manage_channels=True)
 async def create_channel(ctx: commands.Context, channel_name: str):
     if not channel_name or not channel_name.strip():
-        await ctx.send("📣 Use `!create_channel <name>` to create a text channel.")
+        await ctx.send("📣 Use `/create_channel <name>` to create a text channel.")
         return
 
     safe_name = channel_name.strip().lower().replace(" ", "-")
@@ -1166,7 +1228,7 @@ async def create_channel(ctx: commands.Context, channel_name: str):
     await ctx.send(f"📣 Created {new_channel.mention} in {category.mention if category else 'the server'}.")
 
 
-@bot.command(name="lockdown")
+@bot.hybrid_command(name="lockdown", description="Lock the current channel to staff only")
 @staff_only()
 @commands.has_permissions(manage_channels=True)
 async def lockdown_channel(ctx: commands.Context):
@@ -1178,19 +1240,19 @@ async def lockdown_channel(ctx: commands.Context):
     await ctx.send(f"🔒 {ctx.channel.mention} has been locked down to staff only.")
 
 
-@bot.command(name="clear")
+@bot.hybrid_command(name="clear", description="Delete recent messages in this channel")
 @staff_only()
 @commands.has_permissions(manage_messages=True)
 async def clear_messages(ctx: commands.Context, amount: int = 10):
     if amount <= 0:
-        await ctx.send("🧹 Use `!clear <number>` with a positive number.")
+        await ctx.send("🧹 Use `/clear <number>` with a positive number.")
         return
 
     deleted = await ctx.channel.purge(limit=amount)
     await ctx.send(f"🧹 Deleted {len(deleted)} messages.", delete_after=3)
 
 
-@bot.command(name="kick")
+@bot.hybrid_command(name="kick", description="Kick a member from the server")
 @staff_only()
 @commands.has_permissions(kick_members=True)
 async def kick_member(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
@@ -1198,7 +1260,7 @@ async def kick_member(ctx: commands.Context, member: discord.Member, *, reason: 
     await ctx.send(f"👢 {member.mention} was kicked. Reason: {reason}")
 
 
-@bot.command(name="ban")
+@bot.hybrid_command(name="ban", description="Ban a member from the server")
 @staff_only()
 @commands.has_permissions(ban_members=True)
 async def ban_member(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
@@ -1206,12 +1268,12 @@ async def ban_member(ctx: commands.Context, member: discord.Member, *, reason: s
     await ctx.send(f"🚫 {member.mention} was banned. Reason: {reason}")
 
 
-@bot.command(name="timeout")
+@bot.hybrid_command(name="timeout", description="Time out a member")
 @staff_only()
 @commands.has_permissions(moderate_members=True)
 async def timeout_member(ctx: commands.Context, member: discord.Member, minutes: int = 10, *, reason: str = "No reason provided"):
     if minutes <= 0:
-        await ctx.send("⏱️ Use `!timeout @user <minutes> [reason]` with a positive number.")
+        await ctx.send("⏱️ Use `/timeout @user <minutes> [reason]` with a positive number.")
         return
 
     duration = timedelta(minutes=minutes)
@@ -1219,7 +1281,7 @@ async def timeout_member(ctx: commands.Context, member: discord.Member, minutes:
     await ctx.send(f"⏱️ {member.mention} was timed out for {minutes} minutes. Reason: {reason}")
 
 
-@bot.command(name="untimeout")
+@bot.hybrid_command(name="untimeout", description="Remove a member's timeout")
 @staff_only()
 @commands.has_permissions(moderate_members=True)
 async def untimeout_member(ctx: commands.Context, member: discord.Member):
@@ -1227,7 +1289,7 @@ async def untimeout_member(ctx: commands.Context, member: discord.Member):
     await ctx.send(f"✅ {member.mention} is no longer timed out.")
 
 
-@bot.command(name="warn")
+@bot.hybrid_command(name="warn", description="Warn a member and time them out briefly")
 @staff_only()
 @commands.has_permissions(moderate_members=True)
 async def warn_member(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
@@ -1235,7 +1297,52 @@ async def warn_member(ctx: commands.Context, member: discord.Member, *, reason: 
     await ctx.send(f"⚠️ {member.mention} was warned and timed out for 5 minutes. Reason: {reason}")
 
 
-@bot.command(name="report")
+@bot.hybrid_command(name="embed", description="Build and post a custom embed")
+@staff_only()
+async def embed_builder(
+    ctx: commands.Context,
+    title: str = "",
+    description: str = "",
+    color: str = "gold",
+    footer: str = "",
+    image: str = "",
+    thumbnail: str = "",
+    channel: discord.TextChannel = None,
+):
+    """Let staff build and post a custom embed."""
+    if not title.strip() and not description.strip():
+        await ctx.send(
+            "Use: /embed title: <title> description: <text> color: <hex or name> "
+            "footer: <text> image: <url> thumbnail: <url> channel: <#channel>\n"
+            "Only title or description is required; the rest are optional."
+        )
+        return
+
+    embed = discord.Embed(
+        title=safe_discord_text(title, 250) or None,
+        description=safe_discord_text(description, 4000) or None,
+        color=parse_embed_color(color),
+    )
+    if footer.strip():
+        embed.set_footer(text=safe_discord_text(footer, 250))
+    if image.strip() and is_safe_embed_url(image):
+        embed.set_image(url=image.strip())
+    if thumbnail.strip() and is_safe_embed_url(thumbnail):
+        embed.set_thumbnail(url=thumbnail.strip())
+    embed.set_author(name=f"Posted by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+
+    target_channel = channel or ctx.channel
+    try:
+        await target_channel.send(embed=embed)
+        if target_channel.id != ctx.channel.id:
+            await ctx.send(f"✅ Embed sent to {target_channel.mention}.")
+    except discord.Forbidden:
+        await ctx.send("🚫 I don't have permission to send messages in that channel.")
+    except Exception:
+        await ctx.send("⚠️ I couldn't send that embed. Check the image/thumbnail URLs and try again.")
+
+
+@bot.hybrid_command(name="report", description="Submit a moderation report")
 async def report_member(ctx: commands.Context, member: discord.Member, *, reason: str):
     mod_channel = discord.utils.get(ctx.guild.text_channels, name="mod-logs") or discord.utils.get(ctx.guild.text_channels, name="moderation")
     if mod_channel:
@@ -1245,10 +1352,10 @@ async def report_member(ctx: commands.Context, member: discord.Member, *, reason
     await ctx.send(f"📣 Your report against {member.mention} has been submitted.")
 
 
-@bot.command(name="ask")
+@bot.hybrid_command(name="ask", description="Ask a USF question")
 async def ask(ctx: commands.Context, *, question: str):
     if not question.strip():
-        await ctx.send("❓ Ask me a USF question like: `!ask When is the next USF football game?`")
+        await ctx.send("❓ Ask me a USF question like: `/ask When is the next USF football game?`")
         return
 
     try:
@@ -1258,10 +1365,10 @@ async def ask(ctx: commands.Context, *, question: str):
         await ctx.send("⚠️ I couldn’t fetch current USF search results right now. Try a shorter or more specific question.")
 
 
-@bot.command(name="search")
+@bot.hybrid_command(name="search", description="Search current USF-related information")
 async def search(ctx: commands.Context, *, query: str):
     if not query.strip():
-        await ctx.send("🔎 Use `!search <topic>` to look up current USF-related information.")
+        await ctx.send("🔎 Use `/search <topic>` to look up current USF-related information.")
         return
 
     try:
@@ -1280,12 +1387,12 @@ async def send_usf_topic_answer(ctx: commands.Context, topic: str):
         await ctx.send("⚠️ I couldn’t fetch the live USF results right now. Try a more specific question.")
 
 
-@bot.command()
+@bot.hybrid_command(name="today", description="What's happening at USF today")
 async def today(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "events and activities happening today")
 
 
-@bot.command()
+@bot.hybrid_command(name="nextgame", description="Show the next USF NCAA game")
 async def nextgame(ctx: commands.Context):
     """Show the next upcoming NCAA game, preferring USF when available."""
     try:
@@ -1397,112 +1504,112 @@ async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division
         await ctx.send(embed=build_game_embed(display_label, "USF Bulls", "Opponent", "Unavailable", "TBD", away_score=None, home_score=None, description="I couldn’t find any current USF NCAA game data right now."))
 
 
-@bot.command()
+@bot.hybrid_command(name="football", description="USF football updates")
 async def football(ctx: commands.Context):
     await send_usf_sport_answer(ctx, "football", "fbs", "football", "USF Football")
 
 
-@bot.command()
+@bot.hybrid_command(name="basketball", description="USF basketball updates")
 async def basketball(ctx: commands.Context):
     await send_usf_sport_answer(ctx, "basketball-men", "d1", "USF Basketball")
 
 
-@bot.command()
+@bot.hybrid_command(name="baseball", description="USF baseball updates")
 async def baseball(ctx: commands.Context):
     await send_usf_sport_answer(ctx, "baseball", "d1", "USF Baseball")
 
 
-@bot.command()
+@bot.hybrid_command(name="softball", description="USF softball updates")
 async def softball(ctx: commands.Context):
     await send_usf_sport_answer(ctx, "softball", "d1", "USF Softball")
 
 
-@bot.command()
+@bot.hybrid_command(name="soccer", description="USF soccer updates")
 async def soccer(ctx: commands.Context):
     await send_usf_sport_answer(ctx, "soccer-men", "d1", "USF Soccer")
 
 
-@bot.command()
+@bot.hybrid_command(name="volleyball", description="USF volleyball updates")
 async def volleyball(ctx: commands.Context):
     await send_usf_sport_answer(ctx, "volleyball", "d1", "USF Volleyball")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="sports", description="USF sports schedule and upcoming games", hidden=True)
 async def sports(ctx: commands.Context, *, team: str = "all sports"):
     await send_usf_topic_answer(ctx, f"{team} sports schedule and upcoming games")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="calendar", description="USF academic calendar and upcoming events", hidden=True)
 async def calendar(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "academic calendar, deadlines, and upcoming campus events")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="campus", description="Info about a USF campus", hidden=True)
 async def campus(ctx: commands.Context, *, name: str = "all campuses"):
     await send_usf_topic_answer(ctx, f"{name} campus information")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="dining", description="USF dining locations, menus, and hours", hidden=True)
 async def dining(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "dining locations, menus, and hours")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="parking", description="USF parking permits, rules, and availability", hidden=True)
 async def parking(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "parking permits, rules, garages, and availability")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="admissions", description="USF admissions requirements and deadlines", hidden=True)
 async def admissions(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "admissions requirements and application deadlines")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="financialaid", description="USF financial aid, FAFSA, and scholarships", hidden=True)
 async def financialaid(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "financial aid, FAFSA, scholarships, and grants")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="academic", description="USF registration, drop dates, and exams", hidden=True)
 async def academic(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "academic calendar, registration, drop dates, and exams")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="major", description="Info about a USF major or program", hidden=True)
 async def major(ctx: commands.Context, *, name: str):
     await send_usf_topic_answer(ctx, f"the {name} major or program")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="transit", description="Bull Runner routes and transportation", hidden=True)
 async def transit(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "Bull Runner routes and transportation")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="weather", description="Current weather near the Tampa campus", hidden=True)
 async def weather(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "current weather near the Tampa campus")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="news", description="Latest USF news and announcements", hidden=True)
 async def news(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "latest news and announcements")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="events", description="Student events, clubs, and campus activities", hidden=True)
 async def events(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "student events, clubs, and campus activities")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="resources", description="USF counseling, tutoring, and student support", hidden=True)
 async def resources(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "counseling, tutoring, health services, and student support")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="bulls", description="A fun USF fact or trivia", hidden=True)
 async def bulls(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "a fun fact or trivia question about USF")
 
 
-@bot.command(hidden=True)
+@bot.hybrid_command(name="sources", description="Official USF source links for a topic", hidden=True)
 async def sources(ctx: commands.Context, *, topic: str):
     official_sources = {
         "general": "https://www.usf.edu/",
