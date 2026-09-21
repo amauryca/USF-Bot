@@ -114,6 +114,22 @@ def test_extract_ncaa_game_summary_includes_score_when_available():
     assert "UCF Knights" in summary
 
 
+def test_build_game_embed_includes_score_and_game_info():
+    embed = bot.build_game_embed(
+        "USF Football",
+        "UCF Knights",
+        "USF Bulls",
+        "Final",
+        "2026-09-26",
+        away_score=24,
+        home_score=27,
+    )
+
+    assert embed.title == "USF Football"
+    assert any(field.name == "Score" and "24" in field.value and "27" in field.value for field in embed.fields)
+    assert any(field.name == "Status" and field.value == "Final" for field in embed.fields)
+
+
 def test_build_usf_context_prompt_is_usf_first_and_positive():
     prompt = bot.build_usf_context_prompt("What is the best school?")
     lower_prompt = prompt.lower()

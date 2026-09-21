@@ -165,6 +165,21 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "").rstrip("/")
 SEARXNG_CLIENT_IP = os.getenv("SEARXNG_CLIENT_IP", "8.8.8.8")
 
 
+def build_game_embed(title: str, away_team: str, home_team: str, status: str, date_text: str, away_score=None, home_score=None, description: str = "") -> discord.Embed:
+    """Create a clean Discord embed for NCAA game information, including real scores when available."""
+    embed = discord.Embed(title=title, description=description or "USF game update", color=discord.Color.gold())
+    embed.add_field(name="Matchup", value=f"{away_team} vs {home_team}", inline=False)
+
+    if away_score is not None and home_score is not None:
+        embed.add_field(name="Score", value=f"{away_team} {away_score} - {home_team} {home_score}", inline=False)
+    else:
+        embed.add_field(name="Score", value="No score posted yet", inline=False)
+
+    embed.add_field(name="Status", value=str(status or "Status unknown"), inline=True)
+    embed.add_field(name="Date", value=str(date_text or "Unknown"), inline=True)
+    return embed
+
+
 def fetch_ncaa_json(path: str):
     """Fetch JSON from the public NCAA API, returning {} on network or schema failures."""
     if not path:
@@ -1229,67 +1244,126 @@ async def nextgame(ctx: commands.Context):
         for payload in payloads:
             usf_result = extract_next_usf_game(payload)
             if "I couldn’t find any upcoming USF NCAA game right now." not in usf_result and "USF" in usf_result:
-                await ctx.send(safe_discord_text(f"**Next USF game**\n{usf_result}", 1900))
+                game = None
+                for entry in payload.get("games", []) or payload.get("items", []) or payload.get("data", []) or []:
+                    candidate = entry.get("game") if isinstance(entry, dict) and isinstance(entry.get("game"), dict) else entry
+                    if not isinstance(candidate, dict):
+                        continue
+                    home = candidate.get("home") or candidate.get("homeTeam") or candidate.get("home_team") or {}
+                    away = candidate.get("away") or candidate.get("awayTeam") or candidate.get("away_team") or {}
+                    home_name = home.get("name") or home.get("displayName") or home.get("school") or ""
+                    away_name = away.get("name") or away.get("displayName") or away.get("school") or ""
+                    if any(is_usf_team_name(name) for name in (home_name, away_name)):
+                        game = candidate
+                        break
+
+                if game is None:
+                    await ctx.send(embed=build_game_embed("Next USF game", "USF Bulls", "Opponent", "Scheduled", "Check official schedule", away_score=None, home_score=None, description=usf_result))
+                    return
+
+                away_name = (game.get("away") or game.get("awayTeam") or {}).get("name") or (game.get("away") or game.get("awayTeam") or {}).get("displayName") or (game.get("away") or game.get("awayTeam") or {}).get("school") or "Away"
+                home_name = (game.get("home") or game.get("homeTeam") or {}).get("name") or (game.get("home") or game.get("homeTeam") or {}).get("displayName") or (game.get("home") or game.get("homeTeam") or {}).get("school") or "Home"
+                status = game.get("gameState") or game.get("status") or game.get("state") or "Scheduled"
+                start_time = game.get("startDate") or game.get("startTime") or game.get("start_time") or game.get("date") or ""
+                if start_time and "T" in start_time:
+                    start_time = start_time.split("T", 1)[0]
+                away_score = game.get("awayScore") or game.get("away_score")
+                home_score = game.get("homeScore") or game.get("home_score")
+                await ctx.send(embed=build_game_embed("Next USF game", away_name, home_name, str(status), str(start_time or "TBD"), away_score=away_score, home_score=home_score, description=usf_result))
                 return
 
         for payload in payloads:
             generic_result = extract_next_any_game(payload)
             if "I couldn’t find any upcoming NCAA game right now." not in generic_result:
-                await ctx.send(safe_discord_text(f"**Next live NCAA game**\n{generic_result}", 1900))
+                await ctx.send(embed=build_game_embed("Next live NCAA game", "Opponent", "Opponent", "Scheduled", "Check official schedule", away_score=None, home_score=None, description=generic_result))
                 return
 
-        await ctx.send("**Next live NCAA game**\nI couldn’t find any upcoming NCAA game right now.")
+        await ctx.send(embed=build_game_embed("Next live NCAA game", "No matchup found", "No matchup found", "Unavailable", "N/A", away_score=None, home_score=None, description="I couldn’t find any upcoming NCAA game right now."))
     except Exception:
-        await ctx.send("**Next live NCAA game**\nI couldn’t find any upcoming NCAA game right now.")
+        await ctx.send(embed=build_game_embed("Next live NCAA game", "No matchup found", "No matchup found", "Unavailable", "N/A", away_score=None, home_score=None, description="I couldn’t find any upcoming NCAA game right now."))
 
 
-async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division: str, fallback_topic: str, label: str):
-    """Use only the NCAA API for USF sports data; do not fall back to Groq or web search."""
+async def send_usf_sport_answer(ctx: commands.Context, sport_slug: str, division: str, fallback_topic: str, label: str = None):
+    """Use NCAA data to show the real matchup, date, score, and status for USF sports.
+
+    The historical interface passed a fallback topic before the display label. Keep that compatibility
+    while preferring the newer embed-first output.
+    """
+    display_label = label or fallback_topic or sport_slug
     try:
-        ncaa_summary = fetch_ncaa_sport_summary(sport_slug, division)
-        if "I couldn’t find any NCAA game data right now." not in ncaa_summary and "I couldn’t find any USF-related NCAA game data right now." not in ncaa_summary and "Away team vs Home team" not in ncaa_summary and "away team" not in ncaa_summary.lower():
-            await ctx.send(safe_discord_text(f"**{label}**\n{ncaa_summary}", 3900))
-            return
+        current_year = datetime.now().year
+        payloads = []
+        for path in (
+            f"/scoreboard/{sport_slug}/{division}/{current_year}/all-conf",
+            f"/scoreboard/{sport_slug}/{division}/{current_year}/1/all-conf",
+            f"/schedule/{sport_slug}/{division}/{current_year}",
+        ):
+            payload = fetch_ncaa_json(path)
+            if payload:
+                payloads.append(payload)
 
-        await ctx.send(safe_discord_text(f"**{label}**\nI couldn’t find any current USF NCAA game data right now.", 1900))
-        return
+        for payload in payloads:
+            games = payload.get("games", []) or payload.get("items", []) or payload.get("data", []) or []
+            for entry in games:
+                candidate = entry.get("game") if isinstance(entry, dict) and isinstance(entry.get("game"), dict) else entry
+                if not isinstance(candidate, dict):
+                    continue
+
+                home = candidate.get("home") or candidate.get("homeTeam") or candidate.get("home_team") or {}
+                away = candidate.get("away") or candidate.get("awayTeam") or candidate.get("away_team") or {}
+                home_name = home.get("name") or home.get("displayName") or home.get("school") or "Home"
+                away_name = away.get("name") or away.get("displayName") or away.get("school") or "Away"
+                if not any(is_usf_team_name(name) for name in (home_name, away_name)):
+                    continue
+
+                status = candidate.get("gameState") or candidate.get("status") or candidate.get("state") or "Scheduled"
+                start_time = candidate.get("startDate") or candidate.get("startTime") or candidate.get("start_time") or candidate.get("date") or ""
+                if start_time and "T" in start_time:
+                    start_time = start_time.split("T", 1)[0]
+                away_score = candidate.get("awayScore") or candidate.get("away_score")
+                home_score = candidate.get("homeScore") or candidate.get("home_score")
+                await ctx.send(embed=build_game_embed(display_label, away_name, home_name, str(status), str(start_time or "TBD"), away_score=away_score, home_score=home_score))
+                return
+
+        if fetch_ncaa_sport_summary is not None:
+            summary = fetch_ncaa_sport_summary(sport_slug, division)
+            if summary and "I couldn’t find any NCAA game data right now." not in summary and "I couldn’t find any USF-related NCAA game data right now." not in summary and "Away team vs Home team" not in summary and "away team" not in summary.lower():
+                await ctx.send(safe_discord_text(f"**{display_label}**\n{summary}", 3900))
+                return
+
+        await ctx.send(embed=build_game_embed(display_label, "USF Bulls", "Opponent", "Unavailable", "TBD", away_score=None, home_score=None, description="I couldn’t find any current USF NCAA game data right now."))
     except Exception:
-        await ctx.send(safe_discord_text(f"**{label}**\nI couldn’t find any current USF NCAA game data right now.", 1900))
-
-
-async def send_ncaa_sport_command(ctx: commands.Context, sport_slug: str, division: str, label: str, fallback_topic: str):
-    """Shared campus sports handler backed by the NCAA data API only."""
-    await send_usf_sport_answer(ctx, sport_slug, division, fallback_topic, label)
+        await ctx.send(embed=build_game_embed(display_label, "USF Bulls", "Opponent", "Unavailable", "TBD", away_score=None, home_score=None, description="I couldn’t find any current USF NCAA game data right now."))
 
 
 @bot.command()
 async def football(ctx: commands.Context):
-    await send_ncaa_sport_command(ctx, "football", "fbs", "USF Football", "football schedule and upcoming games")
+    await send_usf_sport_answer(ctx, "football", "fbs", "football", "USF Football")
 
 
 @bot.command()
 async def basketball(ctx: commands.Context):
-    await send_ncaa_sport_command(ctx, "basketball-men", "d1", "USF Basketball", "men's basketball schedule and upcoming games")
+    await send_usf_sport_answer(ctx, "basketball-men", "d1", "USF Basketball")
 
 
 @bot.command()
 async def baseball(ctx: commands.Context):
-    await send_ncaa_sport_command(ctx, "baseball", "d1", "USF Baseball", "baseball schedule and upcoming games")
+    await send_usf_sport_answer(ctx, "baseball", "d1", "USF Baseball")
 
 
 @bot.command()
 async def softball(ctx: commands.Context):
-    await send_ncaa_sport_command(ctx, "softball", "d1", "USF Softball", "softball schedule and upcoming games")
+    await send_usf_sport_answer(ctx, "softball", "d1", "USF Softball")
 
 
 @bot.command()
 async def soccer(ctx: commands.Context):
-    await send_ncaa_sport_command(ctx, "soccer-men", "d1", "USF Soccer", "soccer schedule and upcoming games")
+    await send_usf_sport_answer(ctx, "soccer-men", "d1", "USF Soccer")
 
 
 @bot.command()
 async def volleyball(ctx: commands.Context):
-    await send_ncaa_sport_command(ctx, "volleyball", "d1", "USF Volleyball", "volleyball schedule and upcoming games")
+    await send_usf_sport_answer(ctx, "volleyball", "d1", "USF Volleyball")
 
 
 @bot.command(hidden=True)
