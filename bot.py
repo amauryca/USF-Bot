@@ -1041,6 +1041,7 @@ def build_command_pages() -> list[str]:
             "`/softball` - USF softball updates\n"
             "`/soccer` - USF soccer updates\n"
             "`/volleyball` - USF volleyball updates\n"
+            "`/crisis` - USF and national crisis support resources\n"
         ),
         (
             "**Staff & Server Tools**\n"
@@ -1607,6 +1608,27 @@ async def events(ctx: commands.Context):
 @bot.hybrid_command(name="resources", description="USF counseling, tutoring, and student support", hidden=True)
 async def resources(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "counseling, tutoring, health services, and student support")
+
+
+def build_crisis_embed() -> discord.Embed:
+    """Build a static, always-available embed with USF and national crisis resources."""
+    embed = discord.Embed(
+        title="🆘 Need Help Right Now?",
+        description="You are not alone. If you or someone you know is struggling, help is available 24/7.",
+        color=discord.Color.red(),
+    )
+    embed.add_field(name="Life-threatening emergency", value="Call 911 immediately", inline=False)
+    embed.add_field(name="988 Suicide & Crisis Lifeline", value="Call or text 988", inline=False)
+    embed.add_field(name="Crisis Text Line", value="Text HOME to 741741", inline=False)
+    embed.add_field(name="USF Counseling Center (24/7)", value="(813) 974-2831", inline=False)
+    embed.add_field(name="USF Police (non-emergency)", value="(813) 974-2628", inline=False)
+    embed.set_footer(text="On-campus emergency? Dial 911. USF Counseling Center: usf.edu/student-affairs/counseling-center")
+    return embed
+
+
+@bot.hybrid_command(name="crisis", description="Get USF and national crisis support resources")
+async def crisis(ctx: commands.Context):
+    await ctx.send(embed=build_crisis_embed())
 
 
 @bot.hybrid_command(name="bulls", description="A fun USF fact or trivia", hidden=True)
