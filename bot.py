@@ -165,6 +165,7 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "").rstrip("/")
 SEARXNG_CLIENT_IP = os.getenv("SEARXNG_CLIENT_IP", "8.8.8.8")
 NICKNAME_CHANNEL_ID = 1551719938786332772
 NICKNAME_ROLE_ID = 1551719693314826241
+VERIFIED_ROLE_ID = 1549257910830366721
 
 
 def build_game_embed(title: str, away_team: str, home_team: str, status: str, date_text: str, away_score=None, home_score=None, description: str = "") -> discord.Embed:
@@ -1066,6 +1067,7 @@ def build_command_pages() -> list[str]:
             "`/ask <question>` - Ask a USF question\n"
             "`/search <query>` - Search current USF info\n"
             "`/nick <nickname>` - Change your server nickname\n"
+            "`/verify` - Verify with a USF email address\n"
             "`/today` - What's happening at USF today\n"
             "`/nextgame` - Next USF NCAA game\n"
             "`/football` - USF football updates\n"
@@ -1730,6 +1732,62 @@ def build_crisis_embed() -> discord.Embed:
 @bot.hybrid_command(name="crisis", description="Get USF and national crisis support resources")
 async def crisis(ctx: commands.Context):
     await ctx.send(embed=build_crisis_embed())
+
+
+class VerificationModal(discord.ui.Modal, title="USF Email Verification"):
+    email = discord.ui.TextInput(
+        label="Enter your USF email",
+        placeholder="yourname@usf.edu",
+        required=True,
+        max_length=254,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        member = interaction.user
+        email = str(self.email.value).strip().lower()
+
+        if not isinstance(member, discord.Member) or not re.fullmatch(r"[A-Za-z0-9._%+-]+@usf\.edu", email):
+            if isinstance(member, discord.Member):
+                try:
+                    await member.timeout(timedelta(hours=1), reason="Invalid USF email verification")
+                except discord.Forbidden:
+                    pass
+            await interaction.response.send_message(
+                "❌ Verification denied. You must enter a valid `@usf.edu` email. You cannot retry for 1 hour.",
+                ephemeral=True,
+            )
+            return
+
+        role = interaction.guild.get_role(VERIFIED_ROLE_ID) if interaction.guild else None
+        if role is None:
+            await interaction.response.send_message(
+                "⚠️ Verification is temporarily unavailable because the verified role is not configured.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await member.add_roles(role, reason="Valid @usf.edu email verification")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "⚠️ I couldn't assign the verified role. Please contact staff.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            f"✅ Verification complete. You received {role.mention}.",
+            ephemeral=True,
+        )
+
+
+@bot.hybrid_command(name="verify", description="Verify with a USF email address")
+async def verify(ctx: commands.Context):
+    if ctx.interaction is None:
+        await ctx.send("Use `/verify` so your email can be submitted privately.")
+        return
+
+    await ctx.interaction.response.send_modal(VerificationModal())
 
 
 @bot.hybrid_command(name="bulls", description="A fun USF fact or trivia", hidden=True)
