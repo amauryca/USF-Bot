@@ -166,6 +166,7 @@ SEARXNG_CLIENT_IP = os.getenv("SEARXNG_CLIENT_IP", "8.8.8.8")
 NICKNAME_CHANNEL_ID = 1551719938786332772
 NICKNAME_ROLE_ID = 1551719693314826241
 VERIFIED_ROLE_ID = 1549257910830366721
+VERIFICATION_CHANNEL_ID = 1549257834892624042
 
 
 def build_game_embed(title: str, away_team: str, home_team: str, status: str, date_text: str, away_score=None, home_score=None, description: str = "") -> discord.Embed:
@@ -1017,6 +1018,20 @@ def is_staff_member(member: discord.Member) -> bool:
 
 async def nickname_channel_check(interaction: discord.Interaction) -> bool:
     """Allow only /nick in the nickname-only channel."""
+    if interaction.channel_id == VERIFICATION_CHANNEL_ID:
+        if isinstance(interaction.user, discord.Member) and is_staff_member(interaction.user):
+            return True
+
+        command = getattr(interaction, "command", None)
+        if command and command.name == "verify":
+            return True
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "Only `/verify` can be used in this channel.",
+                ephemeral=True,
+            )
+        return False
+
     if interaction.channel_id != NICKNAME_CHANNEL_ID:
         return True
 
@@ -1818,6 +1833,15 @@ async def sources(ctx: commands.Context, *, topic: str):
 @bot.event
 async def on_message(message: discord.Message):
     if not message.guild:
+        return
+
+    if message.channel.id == VERIFICATION_CHANNEL_ID:
+        if isinstance(message.author, discord.Member) and is_staff_member(message.author):
+            return
+        try:
+            await message.delete()
+        except Exception:
+            pass
         return
 
     if message.channel.id == NICKNAME_CHANNEL_ID:
