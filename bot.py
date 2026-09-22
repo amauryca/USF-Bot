@@ -168,6 +168,27 @@ NICKNAME_ROLE_ID = 1551719693314826241
 VERIFIED_ROLE_ID = 1549257910830366721
 VERIFICATION_CHANNEL_ID = 1549257834892624042
 
+CAMPUS_OPTIONS = ["USF Tampa", "USF St. Petersburg", "USF Sarasota-Manatee"]
+
+COLLEGE_OPTIONS = [
+    "College of Arts & Sciences",
+    "Muma College of Business",
+    "College of Engineering",
+    "College of Education",
+    "College of Public Health",
+    "College of Behavioral & Community Sciences",
+    "College of Nursing",
+    "College of The Arts",
+    "Zimmerman School of Advertising & Mass Communications",
+    "College of Marine Science",
+    "School of Architecture and Community Design",
+    "Undeclared / Not Listed",
+]
+
+CAMPUS_COLLEGE_CHANNEL_ID = 1550527454874177689
+CAMPUS_ROLE_PREFIX = "Campus: "
+COLLEGE_ROLE_PREFIX = "College: "
+
 
 def build_game_embed(title: str, away_team: str, home_team: str, status: str, date_text: str, away_score=None, home_score=None, description: str = "") -> discord.Embed:
     """Create a clean Discord embed for NCAA game information, including real scores when available."""
@@ -1129,6 +1150,66 @@ def build_command_pages() -> list[str]:
     return final_pages
 
 
+async def assign_prefixed_role(member: discord.Member, prefix: str, value: str) -> discord.Role:
+    """Remove any role sharing this prefix, then find-or-create and add the matching one."""
+    guild = member.guild
+    role_name = f"{prefix}{value}"[:100]
+
+    old_roles = [r for r in member.roles if r.name.startswith(prefix) and r.name != role_name]
+    if old_roles:
+        await member.remove_roles(*old_roles, reason="Updating campus/college selection")
+
+    role = discord.utils.get(guild.roles, name=role_name)
+    if role is None:
+        role = await guild.create_role(name=role_name, reason="Auto-created campus/college role")
+
+    await member.add_roles(role, reason="Campus/college selection")
+    return role
+
+
+class CampusCollegeButton(discord.ui.Button):
+    """A single campus or college role-assignment button with a stable custom_id for persistence."""
+
+    def __init__(self, prefix: str, value: str, index: int, style: discord.ButtonStyle, row: int):
+        kind = "campus" if prefix == CAMPUS_ROLE_PREFIX else "college"
+        super().__init__(label=value[:80], style=style, custom_id=f"ccpanel:{kind}:{index}", row=row)
+        self.prefix = prefix
+        self.value_label = value
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("⚠️ This only works in a server.", ephemeral=True)
+            return
+
+        try:
+            role = await assign_prefixed_role(interaction.user, self.prefix, self.value_label)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "🚫 I don't have permission to assign that role. Contact staff.",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            await interaction.response.send_message(
+                "⚠️ Something went wrong assigning that role. Try again later.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(f"✅ You now have {role.mention}.", ephemeral=True)
+
+
+class CampusCollegePanelView(discord.ui.View):
+    """Persistent button panel for selecting a campus and college role."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        for index, campus in enumerate(CAMPUS_OPTIONS):
+            self.add_item(CampusCollegeButton(CAMPUS_ROLE_PREFIX, campus, index, discord.ButtonStyle.primary, row=0))
+        for index, college in enumerate(COLLEGE_OPTIONS):
+            self.add_item(CampusCollegeButton(COLLEGE_ROLE_PREFIX, college, index, discord.ButtonStyle.secondary, row=1 + index // 5))
+
+
 class CommandPagerView(discord.ui.View):
     """A paginated Discord view for the command help."""
 
@@ -1168,6 +1249,8 @@ class CommandPagerView(discord.ui.View):
 async def on_ready():
     print(f"Logged in as {bot.user.name} ({bot.user.id})")
     await bot.change_presence(activity=discord.Game(name="Hello, I'm the USF Bot! Go Bulls 🤘"))
+
+    bot.add_view(CampusCollegePanelView())
 
     try:
         guild_id = os.getenv("DISCORD_GUILD_ID")
@@ -1331,6 +1414,29 @@ async def create_invite(ctx: commands.Context, channel: discord.TextChannel = No
     embed.add_field(name="Expiry", value=expiry_text, inline=True)
     embed.add_field(name="Uses", value=uses_text, inline=True)
     await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(name="postcollegepanel", description="Post the campus/college role selection panel")
+@staff_only()
+@commands.bot_has_permissions(manage_roles=True)
+async def post_college_panel(ctx: commands.Context):
+    channel = bot.get_channel(CAMPUS_COLLEGE_CHANNEL_ID)
+    if channel is None:
+        await ctx.send("⚠️ I couldn't find the configured campus/college channel.")
+        return
+
+    embed = discord.Embed(
+        title="🎓 Pick Your Campus & College",
+        description="Click a button below to get your campus and college roles.",
+        color=discord.Color.gold(),
+    )
+    try:
+        await channel.send(embed=embed, view=CampusCollegePanelView())
+    except discord.Forbidden:
+        await ctx.send("🚫 I don't have permission to post in that channel.")
+        return
+
+    await ctx.send(f"✅ Panel posted in {channel.mention}.")
 
 
 @bot.hybrid_command(name="create_channel", description="Create a new text channel")
