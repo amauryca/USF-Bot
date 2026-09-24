@@ -1,11 +1,13 @@
 import json
 import os
+import quopri
 import re
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands
@@ -167,6 +169,8 @@ NICKNAME_CHANNEL_ID = 1551719938786332772
 NICKNAME_ROLE_ID = 1551719693314826241
 VERIFIED_ROLE_ID = 1549257910830366721
 VERIFICATION_CHANNEL_ID = 1549257834892624042
+BULLS_CONNECT_ICAL_URL = "https://bullsconnect.usf.edu/ical/usf/ical_usf.ics"
+BULLS_CONNECT_TIMEZONE = ZoneInfo("America/New_York")
 
 CAMPUS_OPTIONS = ["USF Tampa", "USF St. Petersburg", "USF Sarasota-Manatee"]
 
@@ -217,6 +221,99 @@ def fetch_ncaa_json(path: str):
             return json.loads(response.read().decode("utf-8", "ignore"))
     except Exception:
         return {}
+
+
+def _unfold_ical_lines(calendar_text: str) -> list[str]:
+    """Join iCal continuation lines before parsing properties."""
+    unfolded = []
+    for line in calendar_text.replace("\r\n", "\n").split("\n"):
+        if line.startswith((" ", "\t")) and unfolded:
+            unfolded[-1] += line[1:]
+        else:
+            unfolded.append(line)
+    return unfolded
+
+
+def _decode_ical_text(value: str) -> str:
+    """Decode common iCal quoted-printable and escaped text values."""
+    decoded = quopri.decodestring(value.encode("utf-8")).decode("utf-8", "replace")
+    return decoded.replace("\\n", " ").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\").strip()
+
+
+def _parse_ical_datetime(value: str) -> datetime | None:
+    """Parse UTC and date-only iCal timestamps into Eastern time."""
+    try:
+        if re.fullmatch(r"\d{8}", value):
+            return datetime.strptime(value, "%Y%m%d").replace(tzinfo=BULLS_CONNECT_TIMEZONE)
+        if value.endswith("Z"):
+            return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).astimezone(BULLS_CONNECT_TIMEZONE)
+        return datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=BULLS_CONNECT_TIMEZONE)
+    except ValueError:
+        return None
+
+
+def fetch_weekly_bulls_connect_events(max_events: int = 12) -> list[dict]:
+    """Fetch the Bulls Connect iCal feed and return upcoming events in the next seven days."""
+    request = Request(BULLS_CONNECT_ICAL_URL, headers={"User-Agent": "USF Discord Bot/1.0"})
+    try:
+        with urlopen(request, timeout=15) as response:
+            lines = _unfold_ical_lines(response.read().decode("utf-8", "replace"))
+    except Exception:
+        return []
+
+    events = []
+    current = None
+    for line in lines:
+        if line == "BEGIN:VEVENT":
+            current = {}
+            continue
+        if line == "END:VEVENT":
+            if current and current.get("start") and current.get("summary"):
+                events.append(current)
+            current = None
+            continue
+        if current is None or ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+        property_name = key.split(";", 1)[0]
+        if property_name == "DTSTART":
+            current["start"] = _parse_ical_datetime(value)
+        elif property_name == "DTEND":
+            current["end"] = _parse_ical_datetime(value)
+        elif property_name == "SUMMARY":
+            current["summary"] = _decode_ical_text(value)
+        elif property_name == "LOCATION":
+            current["location"] = _decode_ical_text(value)
+
+    now = datetime.now(BULLS_CONNECT_TIMEZONE)
+    week_end = now + timedelta(days=7)
+    return sorted(
+        (event for event in events if now <= event["start"] < week_end),
+        key=lambda event: event["start"],
+    )[:max_events]
+
+
+def build_weekly_events_embed(events: list[dict]) -> discord.Embed:
+    """Build a compact weekly calendar embed from Bulls Connect events."""
+    embed = discord.Embed(
+        title="📅 Bulls Connect: This Week",
+        description="Upcoming USF events from Bulls Connect.",
+        color=discord.Color.gold(),
+        url="https://bullsconnect.usf.edu/",
+    )
+    if not events:
+        embed.description = "No Bulls Connect events were found for the next seven days."
+        return embed
+
+    for event in events:
+        start = event["start"]
+        time_text = start.strftime("%a, %b %-d at %-I:%M %p ET")
+        location = event.get("location") or "Location TBD"
+        value = safe_discord_text(f"{time_text}\n📍 {location}", 1024)
+        embed.add_field(name=safe_discord_text(event["summary"], 256), value=value, inline=False)
+    embed.set_footer(text="Showing the next 7 days · Bulls Connect")
+    return embed
 
 
 def safe_discord_text(text: str, max_chars: int = 3800) -> str:
@@ -1824,9 +1921,11 @@ async def news(ctx: commands.Context):
     await send_usf_topic_answer(ctx, "latest news and announcements")
 
 
-@bot.hybrid_command(name="events", description="Student events, clubs, and campus activities", hidden=True)
+@bot.hybrid_command(name="events", description="Show Bulls Connect events for the next seven days")
 async def events(ctx: commands.Context):
-    await send_usf_topic_answer(ctx, "student events, clubs, and campus activities")
+    await ctx.defer()
+    events_this_week = fetch_weekly_bulls_connect_events()
+    await ctx.send(embed=build_weekly_events_embed(events_this_week))
 
 
 @bot.hybrid_command(name="resources", description="USF counseling, tutoring, and student support", hidden=True)
