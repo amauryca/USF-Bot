@@ -1,16 +1,17 @@
+import asyncio
 import json
 import os
 import quopri
 import re
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 try:
@@ -171,6 +172,7 @@ VERIFIED_ROLE_ID = 1549257910830366721
 VERIFICATION_CHANNEL_ID = 1549257834892624042
 BULLS_CONNECT_ICAL_URL = "https://bullsconnect.usf.edu/ical/usf/ical_usf.ics"
 BULLS_CONNECT_TIMEZONE = ZoneInfo("America/New_York")
+BULLS_CONNECT_CHANNEL_ID = 1552694899399463062
 
 CAMPUS_OPTIONS = ["USF Tampa", "USF St. Petersburg", "USF Sarasota-Manatee"]
 
@@ -308,7 +310,7 @@ def build_weekly_events_embed(events: list[dict]) -> discord.Embed:
 
     for event in events:
         start = event["start"]
-        time_text = start.strftime("%a, %b %-d at %-I:%M %p ET")
+        time_text = f"<t:{int(start.timestamp())}:F>"
         location = event.get("location") or "Location TBD"
         value = safe_discord_text(f"{time_text}\n📍 {location}", 1024)
         embed.add_field(name=safe_discord_text(event["summary"], 256), value=value, inline=False)
@@ -1134,8 +1136,24 @@ def is_staff_member(member: discord.Member) -> bool:
     return discord.utils.get(member.roles, name="staff") is not None
 
 
+def is_bulls_connect_channel(channel_id: int | None) -> bool:
+    """Return whether a channel is reserved for the Bulls Connect calendar."""
+    return channel_id == BULLS_CONNECT_CHANNEL_ID
+
+
 async def nickname_channel_check(interaction: discord.Interaction) -> bool:
     """Allow only /nick in the nickname-only channel."""
+    if is_bulls_connect_channel(interaction.channel_id):
+        command = getattr(interaction, "command", None)
+        if command and command.name == "events":
+            return True
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "Only `/events` can be used in this channel.",
+                ephemeral=True,
+            )
+        return False
+
     if interaction.channel_id == VERIFICATION_CHANNEL_ID:
         if isinstance(interaction.user, discord.Member) and is_staff_member(interaction.user):
             return True
@@ -1348,6 +1366,8 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(name="Hello, I'm the USF Bot! Go Bulls 🤘"))
 
     bot.add_view(CampusCollegePanelView())
+    if not daily_bulls_connect_update.is_running():
+        daily_bulls_connect_update.start()
 
     try:
         guild_id = os.getenv("DISCORD_GUILD_ID")
@@ -1360,6 +1380,31 @@ async def on_ready():
         print(f"Synced {len(synced)} application command(s).")
     except Exception as exc:
         print(f"Failed to sync application commands: {exc}")
+
+
+@tasks.loop(time=time(hour=6, minute=0, tzinfo=BULLS_CONNECT_TIMEZONE))
+async def daily_bulls_connect_update():
+    """Post the weekly Bulls Connect calendar at 6:00 AM Eastern each day."""
+    channel = bot.get_channel(BULLS_CONNECT_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(BULLS_CONNECT_CHANNEL_ID)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
+
+    if not isinstance(channel, discord.abc.Messageable):
+        return
+
+    events_this_week = await asyncio.to_thread(fetch_weekly_bulls_connect_events)
+    try:
+        await channel.send(embed=build_weekly_events_embed(events_this_week))
+    except discord.Forbidden:
+        pass
+
+
+@daily_bulls_connect_update.before_loop
+async def before_daily_bulls_connect_update():
+    await bot.wait_until_ready()
 
 
 @bot.hybrid_command(name="ping", description="Check bot availability")
@@ -1923,8 +1968,12 @@ async def news(ctx: commands.Context):
 
 @bot.hybrid_command(name="events", description="Show Bulls Connect events for the next seven days")
 async def events(ctx: commands.Context):
+    if not is_bulls_connect_channel(ctx.channel.id):
+        await ctx.send(f"📅 Use `/events` in <#{BULLS_CONNECT_CHANNEL_ID}>.")
+        return
+
     await ctx.defer()
-    events_this_week = fetch_weekly_bulls_connect_events()
+    events_this_week = await asyncio.to_thread(fetch_weekly_bulls_connect_events)
     await ctx.send(embed=build_weekly_events_embed(events_this_week))
 
 
