@@ -195,6 +195,7 @@ COLLEGE_OPTIONS = [
 CAMPUS_COLLEGE_CHANNEL_ID = 1550527454874177689
 CAMPUS_ROLE_PREFIX = "Campus: "
 COLLEGE_ROLE_PREFIX = "College: "
+TEMP_CHANNEL_ACCESS_FILE = PROJECT_ROOT / "temporary_channel_access.json"
 
 
 def build_game_embed(title: str, away_team: str, home_team: str, status: str, date_text: str, away_score=None, home_score=None, description: str = "") -> discord.Embed:
@@ -1244,6 +1245,20 @@ def staff_only():
     return commands.check(predicate)
 
 
+def load_temporary_channel_access() -> list[dict]:
+    """Load persisted temporary channel grants, ignoring malformed state safely."""
+    try:
+        records = json.loads(TEMP_CHANNEL_ACCESS_FILE.read_text(encoding="utf-8"))
+        return records if isinstance(records, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_temporary_channel_access(records: list[dict]) -> None:
+    """Persist temporary channel grants so expirations survive bot restarts."""
+    TEMP_CHANNEL_ACCESS_FILE.write_text(json.dumps(records, indent=2), encoding="utf-8")
+
+
 def build_command_pages() -> list[str]:
     """Split the command help into short, Discord-friendly pages."""
     pages = [
@@ -1271,6 +1286,7 @@ def build_command_pages() -> list[str]:
         (
             "**Staff & Server Tools**\n"
             "`/create_channel <name>` - Create a text channel\n"
+            "`/grant_access @member #channel hours minutes seconds` - Grant timed channel access\n"
             "`/invite [channel] [max_uses] [max_age_hours] [temporary]` - Create a server invite link\n"
             "`/lockdown` - Lock current channel to staff only\n"
             "`/clear <amount>` - Delete recent messages\n"
@@ -1399,6 +1415,62 @@ class CommandPagerView(discord.ui.View):
         await interaction.response.edit_message(content=self._content_for_page(), view=self)
 
 
+@tasks.loop(seconds=30)
+async def expire_temporary_channel_access():
+    """Restore each channel's prior member overwrite after its grant expires."""
+    records = load_temporary_channel_access()
+    now = datetime.now(timezone.utc).timestamp()
+    remaining = []
+
+    for record in records:
+        if record.get("expires_at", 0) > now:
+            remaining.append(record)
+            continue
+
+        guild = bot.get_guild(record["guild_id"])
+        if guild is None:
+            continue
+
+        channel = guild.get_channel(record["channel_id"])
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(record["channel_id"])
+            except discord.NotFound:
+                continue
+            except (discord.Forbidden, discord.HTTPException):
+                remaining.append(record)
+                continue
+
+        member = guild.get_member(record["member_id"])
+        if member is None:
+            try:
+                member = await guild.fetch_member(record["member_id"])
+            except discord.NotFound:
+                continue
+            except (discord.Forbidden, discord.HTTPException):
+                remaining.append(record)
+                continue
+
+        try:
+            if record.get("had_overwrite"):
+                overwrite = discord.PermissionOverwrite.from_pair(
+                    discord.Permissions(record["allow"]),
+                    discord.Permissions(record["deny"]),
+                )
+            else:
+                overwrite = None
+            await channel.set_permissions(member, overwrite=overwrite, reason="Temporary channel access expired")
+        except (discord.Forbidden, discord.HTTPException):
+            remaining.append(record)
+
+    save_temporary_channel_access(remaining)
+
+
+@expire_temporary_channel_access.before_loop
+async def before_expire_temporary_channel_access():
+    await bot.wait_until_ready()
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name} ({bot.user.id})")
@@ -1407,6 +1479,8 @@ async def on_ready():
     bot.add_view(CampusCollegePanelView())
     if not daily_bulls_connect_update.is_running():
         daily_bulls_connect_update.start()
+    if not expire_temporary_channel_access.is_running():
+        expire_temporary_channel_access.start()
 
     try:
         guild_id = os.getenv("DISCORD_GUILD_ID")
@@ -1632,6 +1706,87 @@ async def create_channel(ctx: commands.Context, channel_name: str):
     category = ctx.channel.category
     new_channel = await ctx.guild.create_text_channel(safe_name, category=category)
     await ctx.send(f"📣 Created {new_channel.mention} in {category.mention if category else 'the server'}.")
+
+
+@bot.hybrid_command(name="grant_access", description="Grant a member temporary access to a text channel")
+@staff_only()
+@commands.has_permissions(manage_channels=True)
+@commands.bot_has_permissions(manage_channels=True)
+async def grant_access(
+    ctx: commands.Context,
+    member: discord.Member,
+    channel: discord.TextChannel,
+    hours: int = 0,
+    minutes: int = 0,
+    seconds: int = 0,
+):
+    """Give a member access to a channel for the specified hours, minutes, and seconds."""
+    if ctx.guild is None or channel.guild.id != ctx.guild.id:
+        await ctx.send("⚠️ Choose a text channel from this server.")
+        return
+    if min(hours, minutes, seconds) < 0:
+        await ctx.send("⚠️ Duration values cannot be negative.")
+        return
+
+    duration_seconds = hours * 3600 + minutes * 60 + seconds
+    if duration_seconds <= 0:
+        await ctx.send("⚠️ Specify a duration greater than zero.")
+        return
+
+    records = load_temporary_channel_access()
+    record_key = (ctx.guild.id, channel.id, member.id)
+    existing = next(
+        (
+            record for record in records
+            if (record.get("guild_id"), record.get("channel_id"), record.get("member_id")) == record_key
+        ),
+        None,
+    )
+
+    if existing is None:
+        prior = channel.overwrites.get(member)
+        had_overwrite = prior is not None
+        allow, deny = prior.pair() if prior is not None else (discord.Permissions.none(), discord.Permissions.none())
+        existing = {
+            "guild_id": ctx.guild.id,
+            "channel_id": channel.id,
+            "member_id": member.id,
+            "had_overwrite": had_overwrite,
+            "allow": allow.value,
+            "deny": deny.value,
+        }
+        records.append(existing)
+
+    existing["expires_at"] = datetime.now(timezone.utc).timestamp() + duration_seconds
+    overwrite = channel.overwrites_for(member)
+    overwrite.view_channel = True
+    overwrite.send_messages = True
+    overwrite.read_message_history = True
+    overwrite.send_messages_in_threads = True
+
+    try:
+        await channel.set_permissions(member, overwrite=overwrite, reason=f"Temporary access granted by {ctx.author}")
+        save_temporary_channel_access(records)
+    except (discord.Forbidden, discord.HTTPException, OSError):
+        try:
+            if existing.get("had_overwrite"):
+                restore = discord.PermissionOverwrite.from_pair(
+                    discord.Permissions(existing["allow"]),
+                    discord.Permissions(existing["deny"]),
+                )
+            else:
+                restore = None
+            await channel.set_permissions(member, overwrite=restore, reason="Rolling back failed temporary access grant")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        await ctx.send("⚠️ I couldn't grant temporary access. Check my Manage Channels permission and try again.")
+        return
+
+    end_timestamp = int(existing["expires_at"])
+    await ctx.send(
+        f"✅ {member.mention} can access {channel.mention} for {hours}h {minutes}m {seconds}s. "
+        f"Access expires <t:{end_timestamp}:R>."
+    )
 
 
 @bot.hybrid_command(name="lockdown", description="Lock the current channel to staff only")
