@@ -7,6 +7,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -317,12 +318,24 @@ def build_events_embed(title: str, events: list[dict], empty_message: str) -> di
         embed.description = empty_message
         return embed
 
-    for event in events[:12]:
+    for event in events[:8]:
         start = event["start"]
         location = event.get("location") or "Location TBD"
-        value = safe_discord_text(f"<t:{int(start.timestamp())}:F>\n📍 {location}", 1024)
-        embed.add_field(name=safe_discord_text(event["summary"], 256), value=value, inline=False)
+        value = safe_discord_text(f"<t:{int(start.timestamp())}:F>\n📍 {location}", 400)
+        embed.add_field(name=safe_discord_text(event["summary"], 180), value=value, inline=False)
     return embed
+
+
+def build_event_embeds(title: str, events: list[dict], empty_message: str) -> list[discord.Embed]:
+    """Build paged event-list embeds without dropping busy-day events."""
+    if not events:
+        return [build_events_embed(title, [], empty_message)]
+    pages = [events[index:index + 8] for index in range(0, len(events), 8)]
+    embeds = []
+    for index, page in enumerate(pages, start=1):
+        page_title = f"{title} · {index}/{len(pages)}" if len(pages) > 1 else title
+        embeds.append(build_events_embed(page_title, page, empty_message))
+    return embeds
 
 
 def build_weekly_events_embed(events: list[dict]) -> discord.Embed:
@@ -332,8 +345,8 @@ def build_weekly_events_embed(events: list[dict]) -> discord.Embed:
     return embed
 
 
-def build_month_calendar_embed(year: int, month: int, events: list[dict]) -> discord.Embed:
-    """Build a month grid with an asterisk marking days that have Bulls Connect events."""
+def build_month_calendar_embeds(year: int, month: int, events: list[dict]) -> list[discord.Embed]:
+    """Build a month grid and paged event list, marking each day that has events."""
     event_days = {event["start"].day for event in events}
     cal = month_calendar.Calendar(firstweekday=6)
     rows = []
@@ -342,19 +355,53 @@ def build_month_calendar_embed(year: int, month: int, events: list[dict]) -> dis
 
     month_name = month_calendar.month_name[month]
     grid = "```\nSun Mon Tue Wed Thu Fri Sat\n" + "\n".join(rows) + "\n```"
-    embed = discord.Embed(
-        title=f"📅 Bulls Connect: {month_name} {year}",
-        description=f"`*` marks a day with an event.\n{grid}",
-        color=discord.Color.gold(),
-        url="https://bullsconnect.usf.edu/",
-    )
-    for event in events[:8]:
-        value = safe_discord_text(f"<t:{int(event['start'].timestamp())}:F>", 1024)
-        embed.add_field(name=safe_discord_text(event["summary"], 256), value=value, inline=False)
-    if not events:
-        embed.add_field(name="Events", value="No Bulls Connect events found this month.", inline=False)
-    embed.set_footer(text="Times display in your local timezone · Bulls Connect")
-    return embed
+    pages = [events[index:index + 8] for index in range(0, len(events), 8)] or [[]]
+    embeds = []
+    for index, page in enumerate(pages, start=1):
+        title = f"📅 Bulls Connect: {month_name} {year}"
+        if len(pages) > 1:
+            title += f" · {index}/{len(pages)}"
+        embed = discord.Embed(
+            title=title,
+            description=f"`*` marks a day with an event.\n{grid}",
+            color=discord.Color.gold(),
+            url="https://bullsconnect.usf.edu/",
+        )
+        for event in page:
+            value = safe_discord_text(f"<t:{int(event['start'].timestamp())}:F>\n📍 {event.get('location') or 'Location TBD'}", 400)
+            embed.add_field(name=safe_discord_text(event["summary"], 180), value=value, inline=False)
+        if not events:
+            embed.add_field(name="Events", value="No Bulls Connect events found this month.", inline=False)
+        embed.set_footer(text=f"Times display in your local timezone · Bulls Connect · Page {index}/{len(pages)}")
+        embeds.append(embed)
+    return embeds
+
+
+class CalendarPagerView(discord.ui.View):
+    """Pagination controls for calendar results that exceed one Discord embed."""
+
+    def __init__(self, embeds: list[discord.Embed]):
+        super().__init__(timeout=300)
+        self.embeds = embeds
+        self.page = 0
+        self.previous_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.secondary, disabled=True)
+        self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.primary, disabled=len(embeds) <= 1)
+        self.previous_button.callback = self.go_previous
+        self.next_button.callback = self.go_next
+        self.add_item(self.previous_button)
+        self.add_item(self.next_button)
+
+    async def go_previous(self, interaction: discord.Interaction):
+        self.page = max(0, self.page - 1)
+        self.previous_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= len(self.embeds) - 1
+        await interaction.response.edit_message(embed=self.embeds[self.page], view=self)
+
+    async def go_next(self, interaction: discord.Interaction):
+        self.page = min(len(self.embeds) - 1, self.page + 1)
+        self.previous_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= len(self.embeds) - 1
+        await interaction.response.edit_message(embed=self.embeds[self.page], view=self)
 
 
 def safe_discord_text(text: str, max_chars: int = 3800) -> str:
@@ -1495,9 +1542,9 @@ async def on_ready():
         print(f"Failed to sync application commands: {exc}")
 
 
-@tasks.loop(time=time(hour=6, minute=0, tzinfo=BULLS_CONNECT_TIMEZONE))
+@tasks.loop(time=[time(hour=0, minute=0, tzinfo=BULLS_CONNECT_TIMEZONE), time(hour=16, minute=0, tzinfo=BULLS_CONNECT_TIMEZONE)])
 async def daily_bulls_connect_update():
-    """Post the weekly Bulls Connect calendar at 6:00 AM Eastern each day."""
+    """Post today's events at midnight and tomorrow's events at 4 PM Eastern."""
     channel = bot.get_channel(BULLS_CONNECT_CHANNEL_ID)
     if channel is None:
         try:
@@ -1508,9 +1555,18 @@ async def daily_bulls_connect_update():
     if not isinstance(channel, discord.abc.Messageable):
         return
 
-    events_this_week = await asyncio.to_thread(fetch_weekly_bulls_connect_events)
+    now = datetime.now(BULLS_CONNECT_TIMEZONE)
+    target_date = now.date() + timedelta(days=1 if now.hour >= 12 else 0)
+    start = datetime.combine(target_date, time.min, tzinfo=BULLS_CONNECT_TIMEZONE)
+    end = start + timedelta(days=1)
+    events = await asyncio.to_thread(fetch_bulls_connect_events)
+    selected = filter_bulls_connect_events(events, start, end)
+    title = "📅 Bulls Connect: Tomorrow" if target_date > now.date() else "📅 Bulls Connect: Today"
+    day_label = target_date.strftime("%A, %B %d").replace(" 0", " ")
+    embeds = build_event_embeds(title, selected, f"No Bulls Connect events are scheduled for {day_label}.")
     try:
-        await channel.send(embed=build_weekly_events_embed(events_this_week))
+        for embed in embeds:
+            await channel.send(embed=embed)
     except discord.Forbidden:
         pass
 
@@ -2106,51 +2162,69 @@ async def sports(ctx: commands.Context, *, team: str = "all sports"):
 
 
 @bot.hybrid_command(name="calendar", description="Browse Bulls Connect events by day, week, or month")
-async def calendar(ctx: commands.Context, view: str = "week", date: str = ""):
-    """Show official Bulls Connect events for today, a week, a month, or YYYY-MM-DD."""
-    selected_view = view.strip().lower()
-    if selected_view not in {"today", "week", "month", "date"}:
-        await ctx.send("⚠️ Use `today`, `week`, `month`, or `date` for the view.")
-        return
+async def calendar(
+    ctx: commands.Context,
+    view: Literal["today", "week", "month", "date"] = "week",
+    date: str = "",
+):
+    """Show Bulls Connect events for today, a week, a chosen month, or a specific date."""
+    selected_view = view.lower()
+    date_value = date.strip()
+    anchor = datetime.now(BULLS_CONNECT_TIMEZONE)
 
-    if selected_view == "date" and not date.strip():
-        await ctx.send("⚠️ For a specific day, use `/calendar view:date date:YYYY-MM-DD`.")
-        return
+    if selected_view == "date":
+        try:
+            anchor = datetime.strptime(date_value, "%Y-%m-%d").replace(tzinfo=BULLS_CONNECT_TIMEZONE)
+        except ValueError:
+            await ctx.send("Use `/calendar view:date date:YYYY-MM-DD`, for example `2026-10-01`.")
+            return
+    elif selected_view == "week" and date_value:
+        try:
+            anchor = datetime.strptime(date_value, "%Y-%m-%d").replace(tzinfo=BULLS_CONNECT_TIMEZONE)
+        except ValueError:
+            await ctx.send("For a week view, `date` must use `YYYY-MM-DD`, for example `2026-10-01`.")
+            return
+    elif selected_view == "month" and date_value:
+        try:
+            month_start = datetime.strptime(date_value[:7], "%Y-%m").replace(tzinfo=BULLS_CONNECT_TIMEZONE)
+        except ValueError:
+            await ctx.send("For a month view, use `YYYY-MM` or a date like `YYYY-MM-DD`.")
+            return
+    else:
+        month_start = anchor.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    if selected_view == "month":
+        if not date_value:
+            month_start = anchor.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        month_end = (month_start.replace(year=month_start.year + 1, month=1)
+                     if month_start.month == 12 else month_start.replace(month=month_start.month + 1))
 
     await ctx.defer()
     events = await asyncio.to_thread(fetch_bulls_connect_events)
-    now = datetime.now(BULLS_CONNECT_TIMEZONE)
 
     if selected_view == "today":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
-        result = filter_bulls_connect_events(events, start, end)
-        embed = build_events_embed("📅 Bulls Connect: Today", result, "No Bulls Connect events were found today.")
+        selected = filter_bulls_connect_events(events, start, end)
+        title = "📅 Bulls Connect: Today" if start.date() == datetime.now(BULLS_CONNECT_TIMEZONE).date() else f"📅 Bulls Connect: {start.strftime('%A, %B %d').replace(' 0', ' ')}"
+        embeds = build_event_embeds(title, selected, "No Bulls Connect events were found on this day.")
     elif selected_view == "week":
-        start = now
+        start = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=7)
-        result = filter_bulls_connect_events(events, start, end)
-        embed = build_weekly_events_embed(result)
+        selected = filter_bulls_connect_events(events, start, end)
+        embeds = build_event_embeds("📅 Bulls Connect: 7 Days", selected, "No Bulls Connect events were found in this seven-day period.")
+    elif selected_view == "date":
+        start = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        selected = filter_bulls_connect_events(events, start, end)
+        day_label = start.strftime("%B %d, %Y").replace(" 0", " ")
+        embeds = build_event_embeds(f"📅 Bulls Connect: {day_label}", selected, "No Bulls Connect events were found on that date.")
     else:
-        if selected_view == "date":
-            try:
-                start = datetime.strptime(date.strip(), "%Y-%m-%d").replace(tzinfo=BULLS_CONNECT_TIMEZONE)
-            except ValueError:
-                await ctx.send("⚠️ Use a date in `YYYY-MM-DD` format, such as `2026-10-01`.")
-                return
-            end = start + timedelta(days=1)
-            result = filter_bulls_connect_events(events, start, end)
-            embed = build_events_embed(f"📅 Bulls Connect: {start.strftime('%B %-d, %Y')}", result, "No Bulls Connect events were found on that date.")
-        else:
-            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            if start.month == 12:
-                end = start.replace(year=start.year + 1, month=1)
-            else:
-                end = start.replace(month=start.month + 1)
-            result = filter_bulls_connect_events(events, start, end)
-            embed = build_month_calendar_embed(start.year, start.month, result)
+        selected = filter_bulls_connect_events(events, month_start, month_end)
+        embeds = build_month_calendar_embeds(month_start.year, month_start.month, selected)
 
-    await ctx.send(embed=embed)
+    view = CalendarPagerView(embeds) if len(embeds) > 1 else None
+    await ctx.send(embed=embeds[0], view=view)
 
 
 @bot.hybrid_command(name="campus", description="Info about a USF campus", hidden=True)
