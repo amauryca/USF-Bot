@@ -246,6 +246,38 @@ def test_get_next_usf_game_uses_ncaa_payload_for_upcoming_match():
     assert "2026-09-26" in result
 
 
+def test_filter_bulls_connect_events_uses_inclusive_start_exclusive_end():
+    start = bot.datetime(2026, 9, 24, tzinfo=bot.BULLS_CONNECT_TIMEZONE)
+    events = [
+        {"start": start - bot.timedelta(seconds=1), "summary": "Before"},
+        {"start": start, "summary": "At start"},
+        {"start": start + bot.timedelta(days=1) - bot.timedelta(seconds=1), "summary": "Before end"},
+        {"start": start + bot.timedelta(days=1), "summary": "At end"},
+    ]
+
+    selected = bot.filter_bulls_connect_events(events, start, start + bot.timedelta(days=1))
+
+    assert [event["summary"] for event in selected] == ["At start", "Before end"]
+
+
+def test_month_calendar_paginates_events_and_marks_event_days():
+    events = [
+        {
+            "start": bot.datetime(2026, 9, 1, 12, tzinfo=bot.BULLS_CONNECT_TIMEZONE),
+            "summary": f"Event {index}",
+            "location": "USF Tampa",
+        }
+        for index in range(17)
+    ]
+
+    embeds = bot.build_month_calendar_embeds(2026, 9, events)
+
+    assert len(embeds) == 3
+    assert all(len(embed.fields) <= 8 for embed in embeds)
+    assert "1*" in embeds[0].description
+    assert embeds[-1].fields[0].name == "Event 16"
+
+
 def test_extract_next_usf_game_detects_live_ncaa_feed_usf_abbreviation():
     payload = {
         "games": [

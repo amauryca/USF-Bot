@@ -381,7 +381,7 @@ class CalendarPagerView(discord.ui.View):
     """Pagination controls for calendar results that exceed one Discord embed."""
 
     def __init__(self, embeds: list[discord.Embed]):
-        super().__init__(timeout=300)
+        super().__init__(timeout=1800)
         self.embeds = embeds
         self.page = 0
         self.previous_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.secondary, disabled=True)
@@ -1231,7 +1231,7 @@ async def nickname_channel_check(interaction: discord.Interaction) -> bool:
     """Allow only /nick in the nickname-only channel."""
     if is_bulls_connect_channel(interaction.channel_id):
         command = getattr(interaction, "command", None)
-        if command and command.name == "events":
+        if command and command.name in {"events", "calendar"}:
             return True
         if not interaction.response.is_done():
             await interaction.response.send_message(
@@ -2168,6 +2168,10 @@ async def calendar(
     date: str = "",
 ):
     """Show Bulls Connect events for today, a week, a chosen month, or a specific date."""
+    if not is_bulls_connect_channel(ctx.channel.id):
+        await ctx.send(f"📅 Use `/calendar` in <#{BULLS_CONNECT_CHANNEL_ID}>.")
+        return
+
     selected_view = view.lower()
     date_value = date.strip()
     anchor = datetime.now(BULLS_CONNECT_TIMEZONE)
@@ -2186,7 +2190,10 @@ async def calendar(
             return
     elif selected_view == "month" and date_value:
         try:
-            month_start = datetime.strptime(date_value[:7], "%Y-%m").replace(tzinfo=BULLS_CONNECT_TIMEZONE)
+            if re.fullmatch(r"\d{4}-\d{2}", date_value):
+                month_start = datetime.strptime(date_value, "%Y-%m").replace(tzinfo=BULLS_CONNECT_TIMEZONE)
+            else:
+                month_start = datetime.strptime(date_value, "%Y-%m-%d").replace(day=1, tzinfo=BULLS_CONNECT_TIMEZONE)
         except ValueError:
             await ctx.send("For a month view, use `YYYY-MM` or a date like `YYYY-MM-DD`.")
             return
