@@ -440,7 +440,7 @@ def test_unlock_is_slash_only_and_disables_when_settings_are_incomplete(monkeypa
     interaction = type("Interaction", (), {"response": FakeUnlockResponse()})()
     asyncio.run(bot.handle_unlock_submission(interaction, "dummyanswer"))
     assert interaction.response.messages[-1] == (
-        "System access is temporarily unavailable. Contact staff.", True
+        "Archivist access is temporarily unavailable. Contact staff.", True
     )
 
 
@@ -500,7 +500,7 @@ def test_unlock_wrong_answer_is_private_and_not_echoed(monkeypatch):
     interaction, _, _ = make_unlock_interaction()
     asyncio.run(bot.handle_unlock_submission(interaction, "incorrect-answer"))
     content, ephemeral = interaction.response.messages[-1]
-    assert content == "No match. System access remains locked."
+    assert content == "No match. Archivist access remains locked."
     assert ephemeral is True
     assert "incorrect-answer" not in content
 
@@ -512,7 +512,7 @@ def test_unlock_already_authorized_does_not_require_scavenger(monkeypatch):
     system_role = FakeUnlockRole(300, position=5)
     interaction, _, _ = make_unlock_interaction(member_roles=[system_role], system_role=system_role)
     asyncio.run(bot.handle_unlock_submission(interaction, "anything"))
-    assert interaction.response.messages[-1] == ("You already have System access.", True)
+    assert interaction.response.messages[-1] == ("You already have the Archivist role.", True)
 
 
 def test_unlock_success_assigns_only_system_access(monkeypatch):

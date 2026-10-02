@@ -1310,7 +1310,7 @@ async def before_prune_unlock_cooldown_entries():
 
 
 def get_unlock_setup_error(guild: discord.Guild, config: UnlockConfig) -> tuple[str | None, discord.Role | None, discord.Role | None]:
-    """Validate configured roles and bot hierarchy before granting System Access."""
+    """Validate the configured Archivist role and bot hierarchy before granting it."""
     scavenger_role = guild.get_role(config.scavenger_role_id)
     system_role = guild.get_role(config.system_access_role_id)
     if scavenger_role is None or system_role is None:
@@ -1334,7 +1334,7 @@ async def handle_unlock_submission(interaction: discord.Interaction, submitted_c
     """Validate a Scavenger puzzle submission without exposing it outside this function."""
     config = get_unlock_config()
     if config is None:
-        await interaction.response.send_message("System access is temporarily unavailable. Contact staff.", ephemeral=True)
+        await interaction.response.send_message("Archivist access is temporarily unavailable. Contact staff.", ephemeral=True)
         return
 
     guild = interaction.guild
@@ -1345,17 +1345,17 @@ async def handle_unlock_submission(interaction: discord.Interaction, submitted_c
 
     setup_error, scavenger_role, system_role = get_unlock_setup_error(guild, config)
     if setup_error == "configuration":
-        await interaction.response.send_message("System access is temporarily unavailable. Contact staff.", ephemeral=True)
+        await interaction.response.send_message("Archivist access is temporarily unavailable. Contact staff.", ephemeral=True)
         return
 
     if system_role in member.roles:
-        await interaction.response.send_message("You already have System access.", ephemeral=True)
+        await interaction.response.send_message("You already have the Archivist role.", ephemeral=True)
         return
     if scavenger_role not in member.roles:
         await interaction.response.send_message("You need the Scavenger role to use this terminal.", ephemeral=True)
         return
     if setup_error == "permissions":
-        await interaction.response.send_message("System access is temporarily unavailable. Contact staff.", ephemeral=True)
+        await interaction.response.send_message("Archivist access is temporarily unavailable. Contact staff.", ephemeral=True)
         return
 
     retry_after = await check_unlock_cooldown(member.id)
@@ -1372,13 +1372,13 @@ async def handle_unlock_submission(interaction: discord.Interaction, submitted_c
         await interaction.response.send_message("Enter a non-empty code of at most 128 characters.", ephemeral=True)
         return
     if not hmac.compare_digest(normalized_submission.encode("utf-8"), config.normalized_code.encode("utf-8")):
-        await interaction.response.send_message("No match. System access remains locked.", ephemeral=True)
+        await interaction.response.send_message("No match. Archivist access remains locked.", ephemeral=True)
         return
 
     try:
-        await member.add_roles(system_role, reason="Scavenger puzzle solved")
+        await member.add_roles(system_role, reason="Scavenger puzzle solved; Archivist role granted")
     except (discord.Forbidden, discord.HTTPException):
-        await interaction.response.send_message("Discord couldn't grant System access. Contact staff.", ephemeral=True)
+        await interaction.response.send_message("Discord couldn't grant the Archivist role. Contact staff.", ephemeral=True)
         return
 
     await interaction.response.send_message(
@@ -1462,7 +1462,7 @@ async def nickname_channel_check(interaction: discord.Interaction) -> bool:
 bot.tree.interaction_check = nickname_channel_check
 
 
-@bot.tree.command(name="unlock", description="Submit your Scavenger puzzle answer for System access")
+@bot.tree.command(name="unlock", description="Submit the Scavenger puzzle answer for the Archivist role")
 @app_commands.describe(code="Enter the puzzle answer")
 async def unlock(interaction: discord.Interaction, code: str):
     try:
@@ -1470,7 +1470,7 @@ async def unlock(interaction: discord.Interaction, code: str):
     except Exception:
         if not interaction.response.is_done():
             await interaction.response.send_message(
-                "System access is temporarily unavailable. Contact staff.",
+                "Archivist access is temporarily unavailable. Contact staff.",
                 ephemeral=True,
             )
 
