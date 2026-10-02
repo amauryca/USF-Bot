@@ -439,9 +439,8 @@ def test_unlock_is_slash_only_and_disables_when_settings_are_incomplete(monkeypa
     monkeypatch.setenv("ACCESS_CHANNEL_ID", "not-an-id")
     interaction = type("Interaction", (), {"response": FakeUnlockResponse()})()
     asyncio.run(bot.handle_unlock_submission(interaction, "dummyanswer"))
-    assert interaction.response.messages[-1] == (
-        "Archivist access is temporarily unavailable. Contact staff.", True
-    )
+    assert "not configured" in interaction.response.messages[-1][0]
+    assert interaction.response.messages[-1][1] is True
 
 
 def test_unlock_tree_check_only_allows_unlock_in_configured_terminal(monkeypatch):
@@ -543,7 +542,7 @@ def test_unlock_denies_unsafe_role_or_missing_manage_roles(monkeypatch):
         interaction, _, _ = make_unlock_interaction(**case)
         asyncio.run(bot.handle_unlock_submission(interaction, "dummyanswer"))
         assert interaction.response.messages[-1][1] is True
-        assert "temporarily unavailable" in interaction.response.messages[-1][0]
+        assert any(word in interaction.response.messages[-1][0] for word in ("misconfigured", "cannot assign"))
 
 
 def test_unlock_cooldown_is_concurrent_and_expires(monkeypatch):
@@ -555,12 +554,15 @@ def test_unlock_cooldown_is_concurrent_and_expires(monkeypatch):
     async def exercise():
         answers = await asyncio.gather(*(bot.check_unlock_cooldown(50, now=100) for _ in range(6)))
         retry_after = await bot.check_unlock_cooldown(50, now=161)
-        return answers, retry_after
+        other_user_answers = await asyncio.gather(*(bot.check_unlock_cooldown(51, now=100) for _ in range(5)))
+        return answers, retry_after, other_user_answers
 
-    answers, retry_after = asyncio.run(exercise())
+    answers, retry_after, other_user_answers = asyncio.run(exercise())
     assert sum(answer is None for answer in answers) == 5
     assert sum(answer is not None for answer in answers) == 1
     assert retry_after is None
     assert list(bot._unlock_attempts[50]) == [161]
+    assert all(answer is None for answer in other_user_answers)
+    assert len(bot._unlock_attempts[51]) == 5
     bot._prune_unlock_attempts(222)
     assert 50 not in bot._unlock_attempts

@@ -1334,7 +1334,10 @@ async def handle_unlock_submission(interaction: discord.Interaction, submitted_c
     """Validate a Scavenger puzzle submission without exposing it outside this function."""
     config = get_unlock_config()
     if config is None:
-        await interaction.response.send_message("Archivist access is temporarily unavailable. Contact staff.", ephemeral=True)
+        await interaction.response.send_message(
+            "Unlock is not configured. Staff must set the required puzzle environment variables.",
+            ephemeral=True,
+        )
         return
 
     guild = interaction.guild
@@ -1345,7 +1348,10 @@ async def handle_unlock_submission(interaction: discord.Interaction, submitted_c
 
     setup_error, scavenger_role, system_role = get_unlock_setup_error(guild, config)
     if setup_error == "configuration":
-        await interaction.response.send_message("Archivist access is temporarily unavailable. Contact staff.", ephemeral=True)
+        await interaction.response.send_message(
+            "The Archivist role is missing or misconfigured. It must be unmanaged, not @everyone, and have zero server-wide permissions.",
+            ephemeral=True,
+        )
         return
 
     if system_role in member.roles:
@@ -1355,7 +1361,10 @@ async def handle_unlock_submission(interaction: discord.Interaction, submitted_c
         await interaction.response.send_message("You need the Scavenger role to use this terminal.", ephemeral=True)
         return
     if setup_error == "permissions":
-        await interaction.response.send_message("Archivist access is temporarily unavailable. Contact staff.", ephemeral=True)
+        await interaction.response.send_message(
+            "The bot cannot assign Archivist. Give it Manage Roles and move its highest role above Archivist.",
+            ephemeral=True,
+        )
         return
 
     retry_after = await check_unlock_cooldown(member.id)
@@ -1378,7 +1387,10 @@ async def handle_unlock_submission(interaction: discord.Interaction, submitted_c
     try:
         await member.add_roles(system_role, reason="Scavenger puzzle solved; Archivist role granted")
     except (discord.Forbidden, discord.HTTPException):
-        await interaction.response.send_message("Discord couldn't grant the Archivist role. Contact staff.", ephemeral=True)
+        await interaction.response.send_message(
+            "Discord couldn't grant the Archivist role. Check Manage Roles and role order, then contact staff.",
+            ephemeral=True,
+        )
         return
 
     await interaction.response.send_message(
