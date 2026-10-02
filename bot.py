@@ -1,18 +1,22 @@
 import asyncio
 import calendar as month_calendar
+import hmac
 import json
 import os
 import quopri
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Literal
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
@@ -175,6 +179,19 @@ VERIFICATION_CHANNEL_ID = 1549257834892624042
 BULLS_CONNECT_ICAL_URL = "https://bullsconnect.usf.edu/ical/usf/ical_usf.ics"
 BULLS_CONNECT_TIMEZONE = ZoneInfo("America/New_York")
 BULLS_CONNECT_CHANNEL_ID = 1552694899399463062
+
+
+@dataclass(frozen=True)
+class UnlockConfig:
+    guild_id: int
+    scavenger_role_id: int
+    system_access_role_id: int
+    access_channel_id: int
+    normalized_code: str
+
+
+_unlock_attempts: dict[int, deque[float]] = {}
+_unlock_attempts_lock = asyncio.Lock()
 
 CAMPUS_OPTIONS = ["USF Tampa", "USF St. Petersburg", "USF Sarasota-Manatee"]
 
@@ -1222,6 +1239,154 @@ def is_staff_member(member: discord.Member) -> bool:
     return discord.utils.get(member.roles, name="staff") is not None
 
 
+def normalize_unlock_code(value: str) -> str:
+    """Remove whitespace and punctuation and normalize letter case for code comparison."""
+    return "".join(character.casefold() for character in str(value) if character.isalnum())
+
+
+def _positive_environment_id(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value.isascii() or not value.isdigit() or len(value) > 20:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def get_unlock_config() -> UnlockConfig | None:
+    """Return complete puzzle configuration, or None to disable /unlock safely."""
+    guild_id = _positive_environment_id("DISCORD_GUILD_ID")
+    scavenger_role_id = _positive_environment_id("SCAVENGER_ROLE_ID")
+    system_access_role_id = _positive_environment_id("SYSTEM_ACCESS_ROLE_ID")
+    access_channel_id = _positive_environment_id("ACCESS_CHANNEL_ID")
+    raw_code = os.getenv("SYSTEM_ACCESS_CODE", "").strip()
+    normalized_code = normalize_unlock_code(raw_code)
+    if (
+        guild_id is None
+        or scavenger_role_id is None
+        or system_access_role_id is None
+        or access_channel_id is None
+        or len(raw_code) > 256
+        or not normalized_code
+    ):
+        return None
+    return UnlockConfig(guild_id, scavenger_role_id, system_access_role_id, access_channel_id, normalized_code)
+
+
+async def check_unlock_cooldown(user_id: int, now: float | None = None) -> float | None:
+    """Record an attempt atomically and return retry seconds when over five per minute."""
+    current_time = monotonic() if now is None else now
+    async with _unlock_attempts_lock:
+        _prune_unlock_attempts(current_time)
+
+        timestamps = _unlock_attempts.setdefault(user_id, deque())
+        if len(timestamps) >= 5:
+            return max(1.0, 60 - (current_time - timestamps[0]))
+        timestamps.append(current_time)
+        return None
+
+
+def _prune_unlock_attempts(now: float) -> None:
+    cutoff = now - 60
+    for tracked_user_id, timestamps in list(_unlock_attempts.items()):
+        while timestamps and timestamps[0] <= cutoff:
+            timestamps.popleft()
+        if not timestamps:
+            del _unlock_attempts[tracked_user_id]
+
+
+@tasks.loop(minutes=1)
+async def prune_unlock_cooldown_entries():
+    """Expire idle per-user cooldown records periodically."""
+    async with _unlock_attempts_lock:
+        _prune_unlock_attempts(monotonic())
+
+
+@prune_unlock_cooldown_entries.before_loop
+async def before_prune_unlock_cooldown_entries():
+    await bot.wait_until_ready()
+
+
+def get_unlock_setup_error(guild: discord.Guild, config: UnlockConfig) -> tuple[str | None, discord.Role | None, discord.Role | None]:
+    """Validate configured roles and bot hierarchy before granting System Access."""
+    scavenger_role = guild.get_role(config.scavenger_role_id)
+    system_role = guild.get_role(config.system_access_role_id)
+    if scavenger_role is None or system_role is None:
+        return "configuration", scavenger_role, system_role
+    if system_role.is_default() or system_role.managed or system_role.permissions.value != 0:
+        return "configuration", scavenger_role, system_role
+
+    bot_member = guild.me
+    if bot_member is None and bot.user is not None:
+        bot_member = guild.get_member(bot.user.id)
+    if (
+        bot_member is None
+        or not bot_member.guild_permissions.manage_roles
+        or bot_member.top_role <= system_role
+    ):
+        return "permissions", scavenger_role, system_role
+    return None, scavenger_role, system_role
+
+
+async def handle_unlock_submission(interaction: discord.Interaction, submitted_code: str) -> None:
+    """Validate a Scavenger puzzle submission without exposing it outside this function."""
+    config = get_unlock_config()
+    if config is None:
+        await interaction.response.send_message("System access is temporarily unavailable. Contact staff.", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    member = interaction.user
+    if guild is None or guild.id != config.guild_id or interaction.channel_id != config.access_channel_id:
+        await interaction.response.send_message("Use `/unlock` in the configured decoded channel.", ephemeral=True)
+        return
+
+    setup_error, scavenger_role, system_role = get_unlock_setup_error(guild, config)
+    if setup_error == "configuration":
+        await interaction.response.send_message("System access is temporarily unavailable. Contact staff.", ephemeral=True)
+        return
+
+    if system_role in member.roles:
+        await interaction.response.send_message("You already have System access.", ephemeral=True)
+        return
+    if scavenger_role not in member.roles:
+        await interaction.response.send_message("You need the Scavenger role to use this terminal.", ephemeral=True)
+        return
+    if setup_error == "permissions":
+        await interaction.response.send_message("System access is temporarily unavailable. Contact staff.", ephemeral=True)
+        return
+
+    retry_after = await check_unlock_cooldown(member.id)
+    if retry_after is not None:
+        await interaction.response.send_message("Too many attempts. Please wait before trying again.", ephemeral=True)
+        return
+
+    if not isinstance(submitted_code, str) or not submitted_code or len(submitted_code) > 128:
+        await interaction.response.send_message("Enter a non-empty code of at most 128 characters.", ephemeral=True)
+        return
+
+    normalized_submission = normalize_unlock_code(submitted_code)
+    if not normalized_submission:
+        await interaction.response.send_message("Enter a non-empty code of at most 128 characters.", ephemeral=True)
+        return
+    if not hmac.compare_digest(normalized_submission.encode("utf-8"), config.normalized_code.encode("utf-8")):
+        await interaction.response.send_message("No match. System access remains locked.", ephemeral=True)
+        return
+
+    try:
+        await member.add_roles(system_role, reason="Scavenger puzzle solved")
+    except (discord.Forbidden, discord.HTTPException):
+        await interaction.response.send_message("Discord couldn't grant System access. Contact staff.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(
+        "Access restored. The System channels are now available.",
+        ephemeral=True,
+    )
+
+
 def is_bulls_connect_channel(channel_id: int | None) -> bool:
     """Return whether a channel is reserved for the Bulls Connect calendar."""
     return channel_id == BULLS_CONNECT_CHANNEL_ID
@@ -1229,9 +1394,12 @@ def is_bulls_connect_channel(channel_id: int | None) -> bool:
 
 async def nickname_channel_check(interaction: discord.Interaction) -> bool:
     """Allow only /nick in the nickname-only channel."""
+    command = getattr(interaction, "command", None)
+    command_name = command.name if command else None
+    configured_access_channel = _positive_environment_id("ACCESS_CHANNEL_ID")
+
     if is_bulls_connect_channel(interaction.channel_id):
-        command = getattr(interaction, "command", None)
-        if command and command.name in {"events", "calendar"}:
+        if command_name in {"events", "calendar"}:
             return True
         if not interaction.response.is_done():
             await interaction.response.send_message(
@@ -1244,8 +1412,7 @@ async def nickname_channel_check(interaction: discord.Interaction) -> bool:
         if isinstance(interaction.user, discord.Member) and is_staff_member(interaction.user):
             return True
 
-        command = getattr(interaction, "command", None)
-        if command and command.name == "verify":
+        if command_name == "verify":
             return True
         if not interaction.response.is_done():
             await interaction.response.send_message(
@@ -1254,25 +1421,58 @@ async def nickname_channel_check(interaction: discord.Interaction) -> bool:
             )
         return False
 
-    if interaction.channel_id != NICKNAME_CHANNEL_ID:
-        return True
+    if interaction.channel_id == NICKNAME_CHANNEL_ID:
+        if isinstance(interaction.user, discord.Member) and is_staff_member(interaction.user):
+            return True
 
-    if isinstance(interaction.user, discord.Member) and is_staff_member(interaction.user):
-        return True
+        if command_name == "nick":
+            return True
 
-    command = getattr(interaction, "command", None)
-    if command and command.name == "nick":
-        return True
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "Only `/nick` can be used in this channel.",
+                ephemeral=True,
+            )
+        return False
 
-    if not interaction.response.is_done():
-        await interaction.response.send_message(
-            "Only `/nick` can be used in this channel.",
-            ephemeral=True,
-        )
-    return False
+    if configured_access_channel is not None and interaction.channel_id == configured_access_channel:
+        if command_name == "unlock":
+            return True
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "Only `/unlock` can be used in this channel.",
+                ephemeral=True,
+            )
+        return False
+
+    if command_name == "unlock":
+        config = get_unlock_config()
+        if config and interaction.guild_id == config.guild_id and interaction.channel_id == config.access_channel_id:
+            return True
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "Use `/unlock` in the configured decoded channel.",
+                ephemeral=True,
+            )
+        return False
+
+    return True
 
 
 bot.tree.interaction_check = nickname_channel_check
+
+
+@bot.tree.command(name="unlock", description="Submit your Scavenger puzzle answer for System access")
+@app_commands.describe(code="Enter the puzzle answer")
+async def unlock(interaction: discord.Interaction, code: str):
+    try:
+        await handle_unlock_submission(interaction, code)
+    except Exception:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "System access is temporarily unavailable. Contact staff.",
+                ephemeral=True,
+            )
 
 
 def staff_only():
@@ -1318,6 +1518,7 @@ def build_command_pages() -> list[str]:
             "`/ask <question>` - Ask a USF question\n"
             "`/search <query>` - Search current USF info\n"
             "`/calendar [today|week|month|date]` - Browse Bulls Connect events\n"
+            "`/unlock <code>` - Restore System access (decoded terminal only)\n"
             "`/nick <nickname>` - Change your server nickname\n"
             "`/verify` - Verify with a USF email address\n"
             "`/today` - What's happening at USF today\n"
@@ -1528,6 +1729,8 @@ async def on_ready():
         daily_bulls_connect_update.start()
     if not expire_temporary_channel_access.is_running():
         expire_temporary_channel_access.start()
+    if not prune_unlock_cooldown_entries.is_running():
+        prune_unlock_cooldown_entries.start()
 
     try:
         guild_id = os.getenv("DISCORD_GUILD_ID")

@@ -345,3 +345,222 @@ def test_extract_next_any_game_finds_non_usf_matchup():
     assert "Georgia" in result
     assert "Alabama" in result
     assert "2026-09-21" in result
+
+
+class FakeUnlockRole:
+    def __init__(self, role_id, position=1, *, permissions=0, managed=False, default=False):
+        self.id = role_id
+        self.position = position
+        self.permissions = type("Permissions", (), {"value": permissions})()
+        self.managed = managed
+        self._default = default
+
+    def is_default(self):
+        return self._default
+
+    def __le__(self, other):
+        return self.position <= other.position
+
+
+class FakeUnlockMember:
+    def __init__(self, member_id, roles=None, *, manage_roles=False, top_role=None):
+        self.id = member_id
+        self.roles = list(roles or [])
+        self.guild_permissions = type("GuildPermissions", (), {"manage_roles": manage_roles})()
+        self.top_role = top_role or FakeUnlockRole(999, position=10)
+        self.added_roles = []
+
+    async def add_roles(self, role, reason=None):
+        self.roles.append(role)
+        self.added_roles.append(role)
+
+
+class FakeUnlockGuild:
+    def __init__(self, guild_id, roles, bot_member):
+        self.id = guild_id
+        self.roles = roles
+        self.me = bot_member
+
+    def get_role(self, role_id):
+        return next((role for role in self.roles if role.id == role_id), None)
+
+    def get_member(self, member_id):
+        return self.me if self.me.id == member_id else None
+
+
+class FakeUnlockResponse:
+    def __init__(self):
+        self.messages = []
+
+    def is_done(self):
+        return bool(self.messages)
+
+    async def send_message(self, content, *, ephemeral=False):
+        self.messages.append((content, ephemeral))
+
+
+def make_unlock_interaction(*, guild_id=100, channel_id=400, member_roles=None, system_role=None, bot_manage_roles=True, bot_position=10):
+    scavenger = FakeUnlockRole(200, position=1)
+    system_access = system_role or FakeUnlockRole(300, position=5)
+    bot_member = FakeUnlockMember(900, manage_roles=bot_manage_roles, top_role=FakeUnlockRole(901, position=bot_position))
+    guild = FakeUnlockGuild(guild_id, [scavenger, system_access], bot_member)
+    member = FakeUnlockMember(500, member_roles if member_roles is not None else [scavenger])
+    response = FakeUnlockResponse()
+    interaction = type("Interaction", (), {
+        "guild": guild,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "user": member,
+        "response": response,
+    })()
+    return interaction, scavenger, system_access
+
+
+def configure_unlock_environment(monkeypatch):
+    monkeypatch.setenv("DISCORD_GUILD_ID", "100")
+    monkeypatch.setenv("SCAVENGER_ROLE_ID", "200")
+    monkeypatch.setenv("SYSTEM_ACCESS_ROLE_ID", "300")
+    monkeypatch.setenv("ACCESS_CHANNEL_ID", "400")
+    monkeypatch.setenv("SYSTEM_ACCESS_CODE", "Dummy-Answer")
+
+
+def test_unlock_code_normalization_removes_punctuation_whitespace_and_case():
+    assert bot.normalize_unlock_code("  DuMmY - An swer! ") == "dummyanswer"
+
+
+def test_unlock_is_slash_only_and_disables_when_settings_are_incomplete(monkeypatch):
+    import asyncio
+
+    command = bot.bot.tree.get_command("unlock")
+    assert command is not None
+    assert bot.bot.get_command("unlock") is None
+
+    configure_unlock_environment(monkeypatch)
+    monkeypatch.setenv("ACCESS_CHANNEL_ID", "not-an-id")
+    interaction = type("Interaction", (), {"response": FakeUnlockResponse()})()
+    asyncio.run(bot.handle_unlock_submission(interaction, "dummyanswer"))
+    assert interaction.response.messages[-1] == (
+        "System access is temporarily unavailable. Contact staff.", True
+    )
+
+
+def test_unlock_tree_check_only_allows_unlock_in_configured_terminal(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    configure_unlock_environment(monkeypatch)
+
+    def interaction(command_name, channel_id):
+        return SimpleNamespace(
+            command=SimpleNamespace(name=command_name),
+            channel_id=channel_id,
+            guild_id=100,
+            user=SimpleNamespace(),
+            response=FakeUnlockResponse(),
+        )
+
+    allowed = interaction("unlock", 400)
+    assert asyncio.run(bot.nickname_channel_check(allowed)) is True
+
+    wrong_command = interaction("ping", 400)
+    assert asyncio.run(bot.nickname_channel_check(wrong_command)) is False
+    assert wrong_command.response.messages[-1][1] is True
+
+    wrong_channel = interaction("unlock", 401)
+    assert asyncio.run(bot.nickname_channel_check(wrong_channel)) is False
+    assert wrong_channel.response.messages[-1][1] is True
+
+
+def test_unlock_rejects_wrong_guild_or_channel_privately(monkeypatch):
+    import asyncio
+    import pytest
+
+    configure_unlock_environment(monkeypatch)
+    for guild_id, channel_id in ((101, 400), (100, 401)):
+        interaction, _, _ = make_unlock_interaction(guild_id=guild_id, channel_id=channel_id)
+        asyncio.run(bot.handle_unlock_submission(interaction, "test"))
+        assert interaction.response.messages[-1][1] is True
+        assert "decoded" in interaction.response.messages[-1][0]
+
+
+def test_unlock_requires_scavenger_role(monkeypatch):
+    import asyncio
+
+    configure_unlock_environment(monkeypatch)
+    interaction, _, _ = make_unlock_interaction(member_roles=[])
+    asyncio.run(bot.handle_unlock_submission(interaction, "dummyanswer"))
+    assert "Scavenger" in interaction.response.messages[-1][0]
+    assert interaction.response.messages[-1][1] is True
+
+
+def test_unlock_wrong_answer_is_private_and_not_echoed(monkeypatch):
+    import asyncio
+
+    configure_unlock_environment(monkeypatch)
+    interaction, _, _ = make_unlock_interaction()
+    asyncio.run(bot.handle_unlock_submission(interaction, "incorrect-answer"))
+    content, ephemeral = interaction.response.messages[-1]
+    assert content == "No match. System access remains locked."
+    assert ephemeral is True
+    assert "incorrect-answer" not in content
+
+
+def test_unlock_already_authorized_does_not_require_scavenger(monkeypatch):
+    import asyncio
+
+    configure_unlock_environment(monkeypatch)
+    system_role = FakeUnlockRole(300, position=5)
+    interaction, _, _ = make_unlock_interaction(member_roles=[system_role], system_role=system_role)
+    asyncio.run(bot.handle_unlock_submission(interaction, "anything"))
+    assert interaction.response.messages[-1] == ("You already have System access.", True)
+
+
+def test_unlock_success_assigns_only_system_access(monkeypatch):
+    import asyncio
+
+    configure_unlock_environment(monkeypatch)
+    interaction, scavenger, system_role = make_unlock_interaction()
+    asyncio.run(bot.handle_unlock_submission(interaction, " DUMMY answer! "))
+    assert interaction.user.added_roles == [system_role]
+    assert scavenger in interaction.user.roles
+    assert interaction.response.messages[-1] == (
+        "Access restored. The System channels are now available.", True
+    )
+
+
+def test_unlock_denies_unsafe_role_or_missing_manage_roles(monkeypatch):
+    import asyncio
+    import pytest
+
+    configure_unlock_environment(monkeypatch)
+    cases = [
+        {"system_role": FakeUnlockRole(300, position=5, permissions=1)},
+        {"system_role": FakeUnlockRole(300, position=5, managed=True)},
+        {"bot_manage_roles": False},
+        {"bot_position": 5},
+    ]
+    for case in cases:
+        interaction, _, _ = make_unlock_interaction(**case)
+        asyncio.run(bot.handle_unlock_submission(interaction, "dummyanswer"))
+        assert interaction.response.messages[-1][1] is True
+        assert "temporarily unavailable" in interaction.response.messages[-1][0]
+
+
+def test_unlock_cooldown_is_concurrent_and_expires(monkeypatch):
+    import asyncio
+
+    configure_unlock_environment(monkeypatch)
+    bot._unlock_attempts.clear()
+
+    async def exercise():
+        answers = await asyncio.gather(*(bot.check_unlock_cooldown(50, now=100) for _ in range(6)))
+        retry_after = await bot.check_unlock_cooldown(50, now=161)
+        return answers, retry_after
+
+    answers, retry_after = asyncio.run(exercise())
+    assert sum(answer is None for answer in answers) == 5
+    assert sum(answer is not None for answer in answers) == 1
+    assert retry_after is None
+    assert list(bot._unlock_attempts[50]) == [161]
+    bot._prune_unlock_attempts(222)
+    assert 50 not in bot._unlock_attempts
